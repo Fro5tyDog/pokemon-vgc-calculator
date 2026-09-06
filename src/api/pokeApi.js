@@ -62,6 +62,9 @@ export async function fetchPokemon(speciesSlug) {
       .sort((a, b) => a.slot - b.slot)
       .map((t) => toTitleCase(t.type.name)),
     baseStats,
+    // PokeAPI reports weight in hectograms (1 hg = 0.1 kg) — needed for
+    // weight-based moves like Low Kick / Grass Knot / Heavy Slam / Heat Crash.
+    weightKg: typeof data.weight === 'number' ? data.weight / 10 : null,
     sprite:
       data.sprites?.other?.['official-artwork']?.front_default ||
       data.sprites?.front_default ||
@@ -75,6 +78,77 @@ export async function fetchPokemon(speciesSlug) {
 
   pokemonCache.set(key, result);
   return result;
+}
+
+/**
+ * Species whose bare name either doesn't resolve to a form worth using on
+ * its own, or hides multiple battle-relevant forms behind one name (e.g.
+ * "urshifu" alone isn't a usable /pokemon/ entry — you must pick a style;
+ * "basculegion" resolves to just the male form, hiding the separate female
+ * variant with different stats). Not exhaustive — PokeAPI has ~30 species
+ * like this; expand this list if you spot one missing.
+ */
+const VARIETY_OVERRIDES = {
+  basculegion: ['basculegion-male', 'basculegion-female'],
+  basculin: ['basculin-red-striped', 'basculin-blue-striped', 'basculin-white-striped'],
+  urshifu: ['urshifu-single-strike', 'urshifu-rapid-strike'],
+  zygarde: ['zygarde-10', 'zygarde-50', 'zygarde-complete'],
+  necrozma: ['necrozma', 'necrozma-dusk-mane', 'necrozma-dawn-wings', 'necrozma-ultra'],
+  toxtricity: ['toxtricity-amped', 'toxtricity-low-key'],
+  lycanroc: ['lycanroc-midday', 'lycanroc-midnight', 'lycanroc-dusk'],
+  meowstic: ['meowstic-male', 'meowstic-female'],
+  indeedee: ['indeedee-male', 'indeedee-female'],
+  oinkologne: ['oinkologne-male', 'oinkologne-female'],
+  oricorio: ['oricorio-baile', 'oricorio-pom-pom', 'oricorio-pau', 'oricorio-sensu'],
+  calyrex: ['calyrex', 'calyrex-ice', 'calyrex-shadow'],
+  enamorus: ['enamorus-incarnate', 'enamorus-therian'],
+  landorus: ['landorus-incarnate', 'landorus-therian'],
+  thundurus: ['thundurus-incarnate', 'thundurus-therian'],
+  tornadus: ['tornadus-incarnate', 'tornadus-therian'],
+  giratina: ['giratina-altered', 'giratina-origin'],
+  shaymin: ['shaymin-land', 'shaymin-sky'],
+  deoxys: ['deoxys-normal', 'deoxys-attack', 'deoxys-defense', 'deoxys-speed'],
+  wormadam: ['wormadam-plant', 'wormadam-sandy', 'wormadam-trash'],
+  rotom: ['rotom', 'rotom-heat', 'rotom-wash', 'rotom-frost', 'rotom-fan', 'rotom-mow'],
+  keldeo: ['keldeo-ordinary', 'keldeo-resolute'],
+  meloetta: ['meloetta-aria', 'meloetta-pirouette'],
+  hoopa: ['hoopa', 'hoopa-unbound'],
+};
+
+/**
+ * Fetch every species PokeAPI knows (National Dex order), expanding the
+ * handful with meaningful separate forms via VARIETY_OVERRIDES above.
+ * This is what backs the team-slot species picker — used to be a small
+ * hardcoded "Champions roster" list, now it's everything, live from the API.
+ */
+let allSpeciesCache = null;
+let allSpeciesPromise = null;
+
+export async function fetchAllSpeciesNames() {
+  if (allSpeciesCache) return allSpeciesCache;
+  if (allSpeciesPromise) return allSpeciesPromise;
+
+  allSpeciesPromise = (async () => {
+    const res = await fetch(`${POKEAPI_BASE}/pokemon-species?limit=1500`);
+    if (!res.ok) {
+      allSpeciesPromise = null;
+      throw new Error(`PokeAPI: couldn't fetch species list (status ${res.status})`);
+    }
+    const data = await res.json();
+    const slugs = [];
+    data.results.forEach((s) => {
+      const override = VARIETY_OVERRIDES[s.name];
+      if (override) {
+        slugs.push(...override);
+      } else {
+        slugs.push(s.name);
+      }
+    });
+    allSpeciesCache = slugs;
+    return slugs;
+  })();
+
+  return allSpeciesPromise;
 }
 
 /**
@@ -136,6 +210,10 @@ export async function fetchMoveDetails(moveApiName) {
     // "all-opponents" e.g. Rock Slide/Heat Wave/Surf — opponents only).
     // That's exactly what the Doubles spread-move damage reduction needs.
     targetsMultiple: ['all-other-pokemon', 'all-opponents'].includes(data.target?.name),
+    // Multi-hit moves (Dual Wingbeat, Surging Strikes, Bullet Seed, etc.)
+    // report a min/max hit count here. null/null means single-hit.
+    minHits: data.meta?.min_hits ?? null,
+    maxHits: data.meta?.max_hits ?? null,
   };
 
   moveCache.set(moveApiName, result);

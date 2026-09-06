@@ -1,19 +1,11 @@
-import React, { useEffect } from 'react';
-import { CHAMPIONS_ROSTER } from '../data/championsRoster';
-import { ITEMS, NATURES } from '../data/gameData';
-import { fetchPokemon } from '../api/pokeApi';
+import React from 'react';
+import { NATURES, ITEMS } from '../data/gameData';
 import { calculateStat, applyStatStage } from '../utils/damageCalculator';
 
 const MAX_SP_PER_STAT = 32;
 const MAX_SP_TOTAL = 66;
 const FIXED_IV = 31; // Champions: every Pokémon is treated as perfect IVs
 const FIXED_LEVEL = 50; // Champions: all battles are Lv. 50
-
-const slugToLabel = (slug) =>
-  slug
-    .split('-')
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-    .join(' ');
 
 const STATS = ['hp', 'atk', 'def', 'spa', 'spd', 'spe'];
 const STAT_LABELS = { hp: 'HP', atk: 'Attack', def: 'Defense', spa: 'Sp. Atk', spd: 'Sp. Def', spe: 'Speed' };
@@ -29,35 +21,10 @@ const computeActualStat = (stat, baseValue, sp, natureData, stage) => {
   return isHP ? raw : applyStatStage(raw, stage || 0);
 };
 
+// Species selection now happens via TeamStrip (the 6-box team roster above
+// this panel) — species/sprite fetching for the active slot is handled
+// there too, this panel just displays whatever's already on pokemon.species.
 export default function PokemonPanel({ pokemon, setPokemon }) {
-  // Fetch species data (stats/types/abilities) whenever the selected species changes.
-  useEffect(() => {
-    if (!pokemon.speciesSlug) return;
-
-    let cancelled = false;
-    setPokemon((prev) => ({ ...prev, species: null, speciesError: null, speciesLoading: true }));
-
-    fetchPokemon(pokemon.speciesSlug)
-      .then((data) => {
-        if (cancelled) return;
-        setPokemon((prev) => ({
-          ...prev,
-          species: data,
-          speciesLoading: false,
-          ability: data.abilities[0]?.name || '',
-        }));
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setPokemon((prev) => ({ ...prev, speciesLoading: false, speciesError: err.message }));
-      });
-
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pokemon.speciesSlug]);
-
   const handleSPChange = (stat, rawValue) => {
     const oldValue = pokemon.sp[stat];
     const currentTotal = Object.values(pokemon.sp).reduce((a, b) => a + b, 0);
@@ -72,32 +39,28 @@ export default function PokemonPanel({ pokemon, setPokemon }) {
     setPokemon({ ...pokemon, statStages: { ...pokemon.statStages, [stat]: clamped } });
   };
 
-  const spTotal = Object.values(pokemon.sp).reduce((a, b) => a + b, 0);
+  const spTotal = pokemon ? Object.values(pokemon.sp).reduce((a, b) => a + b, 0) : 0;
+
+  // Fixed-size box regardless of state, so picking/clearing a Pokémon never
+  // shifts the Field Conditions column or the other side's panel.
+  const containerStyle = { border: '1px solid #ddd', padding: '15px', borderRadius: '4px', minHeight: '520px', boxSizing: 'border-box' };
+
+  if (!pokemon || !pokemon.species) {
+    return (
+      <div style={{ ...containerStyle, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ textAlign: 'center', color: '#999', fontSize: '1.05em', padding: '20px' }}>
+          {pokemon?.speciesError
+            ? `Error: ${pokemon.speciesError}`
+            : pokemon?.speciesLoading
+            ? 'Loading Pokémon data...'
+            : 'Select a Pokémon to view stats here'}
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div style={{ border: '1px solid #ddd', padding: '15px', borderRadius: '4px' }}>
-      {/* Pokémon Selection (Champions roster only) */}
-      <div style={{ marginBottom: '15px', display: 'flex', gap: '10px', alignItems: 'center' }}>
-        <label style={{ flex: 1 }}>
-          Pokémon:
-          <select
-            value={pokemon.speciesSlug}
-            onChange={(e) => setPokemon({ ...pokemon, speciesSlug: e.target.value })}
-          >
-            {CHAMPIONS_ROSTER.map((slug) => (
-              <option key={slug} value={slug}>
-                {slugToLabel(slug)}
-              </option>
-            ))}
-          </select>
-        </label>
-        {pokemon.species?.sprite && (
-          <img src={pokemon.species.sprite} alt={pokemon.species.name} style={{ width: '56px', height: '56px' }} />
-        )}
-      </div>
-
-      {pokemon.speciesLoading && <div style={{ fontSize: '0.9em', color: '#666' }}>Loading Pokémon data from PokeAPI...</div>}
-      {pokemon.speciesError && <div style={{ fontSize: '0.9em', color: '#c00' }}>Error: {pokemon.speciesError}</div>}
+    <div style={containerStyle}>
       {pokemon.species && (
         <div style={{ fontSize: '0.9em', marginBottom: '15px' }}>
           Types: {pokemon.species.types.join(', ')}
@@ -243,18 +206,6 @@ export default function PokemonPanel({ pokemon, setPokemon }) {
             </tbody>
           </table>
         )}
-      </div>
-
-      {/* Critical Hit — relevant when this Pokémon is the one attacking */}
-      <div>
-        <label>
-          <input
-            type="checkbox"
-            checked={pokemon.isCritical}
-            onChange={(e) => setPokemon({ ...pokemon, isCritical: e.target.checked })}
-          />
-          Critical Hit (when attacking)
-        </label>
       </div>
     </div>
   );

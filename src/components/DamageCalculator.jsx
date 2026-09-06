@@ -1,35 +1,21 @@
 import React, { useState, useEffect } from 'react';
 import { calculateDamage } from '../utils/damageCalculator';
 import { NATURES, TYPE_CHART } from '../data/gameData';
-import { buildCombatant, activeMove } from '../utils/combatant';
-import { fetchMoveDetails, fetchAllMoveNames } from '../api/pokeApi';
+import {
+  buildCombatant,
+  activeMove,
+  activeMoveSlot,
+  makeInitialSide,
+  activePokemon,
+  activeTeamBaseAttacks,
+  makeActiveSlotSetter,
+} from '../utils/combatant';
+import { fetchMoveDetails, fetchAllMoveNames, fetchPokemon } from '../api/pokeApi';
+import { isAlwaysCrit } from '../utils/specialMoves';
 import PokemonPanel from './PokemonPanel';
 import MoveSelector from './MoveSelector';
 import DamageOutput from './DamageOutput';
-
-const FIXED_IV = 31;
-const FIXED_LEVEL = 50;
-const MOVE_SLOT_COUNT = 4;
-
-const emptyMoveSlot = () => ({ apiName: '', details: null, loading: false, error: null });
-
-const makeDefaultPokemon = (speciesSlug) => ({
-  speciesSlug,
-  species: null,
-  speciesLoading: false,
-  speciesError: null,
-  moves: Array.from({ length: MOVE_SLOT_COUNT }, emptyMoveSlot),
-  activeMoveIndex: 0,
-  item: null,
-  ability: null,
-  nature: 'adamant',
-  level: FIXED_LEVEL,
-  isCritical: false,
-  sp: { hp: 0, atk: 0, def: 0, spa: 0, spd: 0, spe: 0 },
-  iv: { hp: FIXED_IV, atk: FIXED_IV, def: FIXED_IV, spa: FIXED_IV, spd: FIXED_IV, spe: FIXED_IV },
-  statStages: { atk: 0, def: 0, spa: 0, spd: 0, spe: 0 },
-  teraType: null,
-});
+import TeamStrip from './TeamStrip';
 
 const STAT_ABBREV = { hp: 'HP', atk: 'Atk', def: 'Def', spa: 'SpA', spd: 'SpD', spe: 'Spe' };
 
@@ -44,8 +30,9 @@ const natureSign = (pokemon, stat) => {
 const formatSpread = (pokemon, stat) =>
   `${pokemon.sp[stat]}${natureSign(pokemon, stat)} ${STAT_ABBREV[stat]}`;
 
-const buildSummaryLine = (attackerP, defenderP, move, result) => {
+const buildSummaryLine = (attackerP, defenderP, move, result, isCritical) => {
   if (!result || !move) return '';
+  const critSuffix = isCritical ? ' on a critical hit' : '';
   if (!result.damageRange) {
     return `${attackerP.species.name} ${move.name} vs. ${defenderP.species.name}: no damage (Status move)`;
   }
@@ -54,19 +41,27 @@ const buildSummaryLine = (attackerP, defenderP, move, result) => {
   const { minDamage, maxDamage, damageRange, koInHits } = result;
   return (
     `${formatSpread(attackerP, atkStat)} ${attackerP.species.name} ${move.name} vs. ` +
-    `${formatSpread(defenderP, 'hp')} / ${formatSpread(defenderP, defStat)} ${defenderP.species.name}: ` +
-    `${minDamage}-${maxDamage} (${damageRange.minPercent}% - ${damageRange.maxPercent}%) -- ${koInHits}`
+    `${formatSpread(defenderP, 'hp')} / ${formatSpread(defenderP, defStat)} ${defenderP.species.name}` +
+    `${critSuffix}: ${minDamage}-${maxDamage} (${damageRange.minPercent}% - ${damageRange.maxPercent}%) -- ${koInHits}`
   );
 };
 
-// Picking (or clearing) a move in a slot: update the slot right away so the
-// UI reflects it immediately, fetch full details in the background, and
-// auto-activate the slot the moment a move is picked — this is what lets
-// the move list double as the selector, no separate "active" control needed.
+// Picking (or clearing) a move in a slot: update the slot right away, fetch
+// full details in the background, auto-activate the slot the moment a move
+// is picked, auto-check the crit toggle for always-crit moves, and reset
+// per-move extras for the newly picked move.
 const makeMoveSlotHandler = (setPokemon) => (index, apiName) => {
   setPokemon((prev) => {
     const newMoves = [...prev.moves];
-    newMoves[index] = { apiName, details: null, loading: !!apiName, error: null };
+    newMoves[index] = {
+      apiName,
+      details: null,
+      loading: !!apiName,
+      error: null,
+      isCritical: isAlwaysCrit(apiName),
+      hitCount: null,
+      faintedAllies: 0,
+    };
     return { ...prev, moves: newMoves, activeMoveIndex: apiName ? index : prev.activeMoveIndex };
   });
 
@@ -77,7 +72,7 @@ const makeMoveSlotHandler = (setPokemon) => (index, apiName) => {
       setPokemon((prev) => {
         if (prev.moves[index]?.apiName !== apiName) return prev; // stale response
         const newMoves = [...prev.moves];
-        newMoves[index] = { apiName, details: data, loading: false, error: null };
+        newMoves[index] = { ...newMoves[index], apiName, details: data, loading: false, error: null };
         return { ...prev, moves: newMoves };
       });
     })
@@ -85,15 +80,80 @@ const makeMoveSlotHandler = (setPokemon) => (index, apiName) => {
       setPokemon((prev) => {
         if (prev.moves[index]?.apiName !== apiName) return prev;
         const newMoves = [...prev.moves];
-        newMoves[index] = { apiName, details: null, loading: false, error: err.message };
+        newMoves[index] = { ...newMoves[index], apiName, details: null, loading: false, error: err.message };
         return { ...prev, moves: newMoves };
       });
     });
 };
 
+// Builds the { ...combatant, move, isCritical } shape calculateDamage()
+// needs for whichever Pokémon is attacking, pulling hitCount/faintedAllies/
+// isCritical from the active move slot and teamBaseAttacks from the roster.
+const buildAttackerInput = (pokemon, teamBaseAttacks) => {
+  const slot = activeMoveSlot(pokemon);
+  const move = activeMove(pokemon);
+  if (!move || !slot) return null;
+  return {
+    ...buildCombatant(pokemon),
+    move: { ...move, hitCount: slot.hitCount, faintedAllies: slot.faintedAllies, teamBaseAttacks },
+    isCritical: slot.isCritical,
+  };
+};
+
+// Self-healing: whenever a team slot has a speciesSlug but no fetched
+// species data yet (a fresh pick, or a team switched into), fetch it. Only
+// scans the currently-active team — other teams' members load once you
+// page to them.
+function useTeamSpeciesFetch(side, setSide) {
+  useEffect(() => {
+    const team = side.teams[side.activeTeamIndex];
+    team.forEach((slot, idx) => {
+      if (slot && slot.speciesSlug && !slot.species && !slot.speciesLoading && !slot.speciesError) {
+        setSide((prev) => {
+          const newTeams = prev.teams.map((t, ti) =>
+            ti === prev.activeTeamIndex ? t.map((s, si) => (si === idx ? { ...s, speciesLoading: true } : s)) : t
+          );
+          return { ...prev, teams: newTeams };
+        });
+
+        fetchPokemon(slot.speciesSlug)
+          .then((data) => {
+            setSide((prev) => {
+              const newTeams = prev.teams.map((t, ti) =>
+                ti === prev.activeTeamIndex
+                  ? t.map((s, si) =>
+                      si === idx && s?.speciesSlug === slot.speciesSlug
+                        ? { ...s, species: data, speciesLoading: false, ability: data.abilities[0]?.name || '' }
+                        : s
+                    )
+                  : t
+              );
+              return { ...prev, teams: newTeams };
+            });
+          })
+          .catch((err) => {
+            setSide((prev) => {
+              const newTeams = prev.teams.map((t, ti) =>
+                ti === prev.activeTeamIndex
+                  ? t.map((s, si) =>
+                      si === idx && s?.speciesSlug === slot.speciesSlug
+                        ? { ...s, speciesLoading: false, speciesError: err.message }
+                        : s
+                    )
+                  : t
+              );
+              return { ...prev, teams: newTeams };
+            });
+          });
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [side]);
+}
+
 export default function DamageCalculator() {
-  const [pokemon1, setPokemon1] = useState(makeDefaultPokemon('basculegion'));
-  const [pokemon2, setPokemon2] = useState(makeDefaultPokemon('garchomp'));
+  const [side1, setSide1] = useState(() => makeInitialSide('basculegion'));
+  const [side2, setSide2] = useState(() => makeInitialSide('garchomp'));
   const [allMoves, setAllMoves] = useState([]);
   const [allMovesLoading, setAllMovesLoading] = useState(true);
 
@@ -103,8 +163,9 @@ export default function DamageCalculator() {
     isDoublesFormat: false,
   });
 
-  // Full move list fetched once here (not per-panel) since both Pokémon's
-  // move selectors share it.
+  useTeamSpeciesFetch(side1, setSide1);
+  useTeamSpeciesFetch(side2, setSide2);
+
   useEffect(() => {
     fetchAllMoveNames()
       .then((list) => setAllMoves(list))
@@ -112,85 +173,82 @@ export default function DamageCalculator() {
       .finally(() => setAllMovesLoading(false));
   }, []);
 
-  const handleMoveSlot1 = makeMoveSlotHandler(setPokemon1);
-  const handleMoveSlot2 = makeMoveSlotHandler(setPokemon2);
+  const setPokemon1 = makeActiveSlotSetter(setSide1);
+  const setPokemon2 = makeActiveSlotSetter(setSide2);
 
-  const bothSpeciesLoaded = pokemon1.species && pokemon2.species;
+  const pokemon1 = activePokemon(side1);
+  const pokemon2 = activePokemon(side2);
 
-  const move1 = activeMove(pokemon1);
-  const result1to2 =
-    bothSpeciesLoaded && move1
-      ? calculateDamage({ ...buildCombatant(pokemon1), move: move1 }, buildCombatant(pokemon2), fieldState, TYPE_CHART)
-      : null;
+  const teamBaseAttacks1 = activeTeamBaseAttacks(side1);
+  const teamBaseAttacks2 = activeTeamBaseAttacks(side2);
 
-  const move2 = activeMove(pokemon2);
-  const result2to1 =
-    bothSpeciesLoaded && move2
-      ? calculateDamage({ ...buildCombatant(pokemon2), move: move2 }, buildCombatant(pokemon1), fieldState, TYPE_CHART)
-      : null;
+  const move1 = pokemon1 ? activeMove(pokemon1) : null;
+  const bothSpeciesReady = !!(pokemon1?.species && pokemon2?.species);
+  const attackerInput1 = bothSpeciesReady && move1 ? buildAttackerInput(pokemon1, teamBaseAttacks1) : null;
+  const result1to2 = attackerInput1 ? calculateDamage(attackerInput1, buildCombatant(pokemon2), fieldState, TYPE_CHART) : null;
 
-  const summary1to2 = bothSpeciesLoaded ? buildSummaryLine(pokemon1, pokemon2, move1, result1to2) : '';
-  const summary2to1 = bothSpeciesLoaded ? buildSummaryLine(pokemon2, pokemon1, move2, result2to1) : '';
+  const move2 = pokemon2 ? activeMove(pokemon2) : null;
+  const attackerInput2 = bothSpeciesReady && move2 ? buildAttackerInput(pokemon2, teamBaseAttacks2) : null;
+  const result2to1 = attackerInput2 ? calculateDamage(attackerInput2, buildCombatant(pokemon1), fieldState, TYPE_CHART) : null;
+
+  const summary1to2 = result1to2 ? buildSummaryLine(pokemon1, pokemon2, move1, result1to2, activeMoveSlot(pokemon1)?.isCritical) : '';
+  const summary2to1 = result2to1 ? buildSummaryLine(pokemon2, pokemon1, move2, result2to1, activeMoveSlot(pokemon2)?.isCritical) : '';
+
+  const resultBoxStyle = { flex: '1 1 320px', minWidth: '280px', minHeight: '60px' };
 
   return (
     <div style={{ padding: '20px', fontFamily: 'sans-serif' }}>
       <h1>Pokémon Champions Damage Calculator</h1>
 
-      {!bothSpeciesLoaded && (
-        <div style={{ padding: '15px', marginBottom: '20px', border: '1px dashed #ccc', color: '#666', fontStyle: 'italic' }}>
-          Loading Pokémon data...
-        </div>
-      )}
+      <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', marginBottom: '10px' }}>
+        <MoveSelector
+          pokemon={pokemon1}
+          setPokemon={setPokemon1}
+          opponent={pokemon2}
+          fieldState={fieldState}
+          allMoves={allMoves}
+          allMovesLoading={allMovesLoading}
+          onMoveSlotChange={makeMoveSlotHandler(setPokemon1)}
+          teamBaseAttacks={teamBaseAttacks1}
+        />
+        <MoveSelector
+          pokemon={pokemon2}
+          setPokemon={setPokemon2}
+          opponent={pokemon1}
+          fieldState={fieldState}
+          allMoves={allMoves}
+          allMovesLoading={allMovesLoading}
+          onMoveSlotChange={makeMoveSlotHandler(setPokemon2)}
+          teamBaseAttacks={teamBaseAttacks2}
+        />
+      </div>
 
-      {/* Move lists double as the move picker for each Pokémon — pick a
-          move here, no separate selection UI elsewhere */}
-      {bothSpeciesLoaded && (
-        <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', marginBottom: '15px' }}>
-          <MoveSelector
-            pokemon={pokemon1}
-            setPokemon={setPokemon1}
-            opponent={pokemon2}
-            fieldState={fieldState}
-            allMoves={allMoves}
-            allMovesLoading={allMovesLoading}
-            onMoveSlotChange={handleMoveSlot1}
-          />
-          <MoveSelector
-            pokemon={pokemon2}
-            setPokemon={setPokemon2}
-            opponent={pokemon1}
-            fieldState={fieldState}
-            allMoves={allMoves}
-            allMovesLoading={allMovesLoading}
-            onMoveSlotChange={handleMoveSlot2}
-          />
-        </div>
-      )}
-
-      {/* Detailed result for whichever move is active on each side */}
-      {bothSpeciesLoaded && (
-        <div style={{ marginBottom: '20px' }}>
+      <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', marginBottom: '20px' }}>
+        <div style={resultBoxStyle}>
           {result1to2 ? (
             <DamageOutput result={result1to2} summaryLine={summary1to2} />
           ) : (
-            <div style={{ padding: '4px 0', color: '#666', fontStyle: 'italic', fontSize: '14px' }}>
-              Select an active move for {pokemon1.species.name}.
-            </div>
-          )}
-          {result2to1 ? (
-            <DamageOutput result={result2to1} summaryLine={summary2to1} />
-          ) : (
-            <div style={{ padding: '4px 0', color: '#666', fontStyle: 'italic', fontSize: '14px' }}>
-              Select an active move for {pokemon2.species.name}.
+            <div style={{ padding: '4px 0', color: '#999', fontStyle: 'italic', fontSize: '14px' }}>
+              {pokemon1?.species ? `Select an active move for ${pokemon1.species.name}.` : 'Select a Pokémon above to see damage here.'}
             </div>
           )}
         </div>
-      )}
+        <div style={resultBoxStyle}>
+          {result2to1 ? (
+            <DamageOutput result={result2to1} summaryLine={summary2to1} />
+          ) : (
+            <div style={{ padding: '4px 0', color: '#999', fontStyle: 'italic', fontSize: '14px' }}>
+              {pokemon2?.species ? `Select an active move for ${pokemon2.species.name}.` : 'Select a Pokémon above to see damage here.'}
+            </div>
+          )}
+        </div>
+      </div>
 
-      {/* Pokémon 1 | Field (middle) | Pokémon 2 */}
+      {/* Team 1 | Field (middle) | Team 2 */}
       <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', alignItems: 'flex-start' }}>
         <div style={{ flex: '1 1 320px', minWidth: '300px' }}>
           <h2>Pokémon 1</h2>
+          <TeamStrip side={side1} setSide={setSide1} />
           <PokemonPanel pokemon={pokemon1} setPokemon={setPokemon1} />
         </div>
 
@@ -242,7 +300,8 @@ export default function DamageCalculator() {
 
         <div style={{ flex: '1 1 320px', minWidth: '300px' }}>
           <h2>Pokémon 2</h2>
-          <PokemonPanel pokemon={pokemon2} setPokemon={setPokemon2} />
+          <TeamStrip side={side2} setSide={setSide2} />
+          {pokemon2 && <PokemonPanel pokemon={pokemon2} setPokemon={setPokemon2} />}
         </div>
       </div>
     </div>

@@ -1,8 +1,13 @@
 /**
  * Pokémon Gen 9 damage calculator
- * Based on the damage formula: ((2 * Level * Critical / 5 + 2) * Power * A/D / 50 + 2) * STAB * Type1 * Type2 * random
- * All intermediate results are floored (rounded down)
+ * Based on the damage formula: ((2 * Level / 5 + 2) * Power * A/D / 50 + 2) * [crit 1.5x] * STAB * Type1 * Type2 * random
+ * Critical hits are a flat 1.5x multiplier applied as their own step (Gen 6+
+ * mechanic), not the old Gen 1-5 "double the effective level" approach.
+ * All intermediate results are floored (rounded down), except the /4096
+ * fixed-point modifiers (crit, multi-target reduction, etc.), which round
+ * half up.
  */
+import { getEffectiveMovePower } from './specialMoves';
 
 /**
  * Floor division - mimics Pokémon's integer math
@@ -59,8 +64,11 @@ export const calculateStat = (baseStat, iv, ev, level, natureMultiplier = 1.0, i
  * Returns 4x, 2x, 1x, 0.5x, 0.25x, or 0x (immune)
  */
 export const getTypeEffectiveness = (moveType, defenderType1, defenderType2, typeChart) => {
-  const type1Effect = typeChart[moveType]?.[defenderType1] || 1;
-  const type2Effect = defenderType2 ? typeChart[moveType]?.[defenderType2] || 1 : 1;
+  // ?? not || here — a real immunity is a legitimate 0, and `0 || 1` would
+  // wrongly fall back to 1 (neutral) since 0 is falsy in JS. Only an actual
+  // missing chart entry (undefined) should default to neutral.
+  const type1Effect = typeChart[moveType]?.[defenderType1] ?? 1;
+  const type2Effect = defenderType2 ? (typeChart[moveType]?.[defenderType2] ?? 1) : 1;
   return type1Effect * type2Effect;
 };
 
@@ -82,8 +90,9 @@ export const calculateDamage = (
   const attackerLevel = attacker.level || 50;
   const defenderLevel = defender.level || 50;
 
-  const isCritical = attacker.isCritical ? 2 : 1;
-  const movePower = attacker.move?.basePower || 1;
+  // Note: no level-doubling for crits here — that was the old Gen 1-5
+  // mechanic. Gen 6+ (which Champions follows) uses a flat 1.5x multiplier
+  // applied as its own step later in the pipeline, not baked into this term.
   const moveType = attacker.move?.type || 'Normal';
   const moveCategory = attacker.move?.category || 'Physical'; // Physical, Special, Status
 
@@ -136,29 +145,45 @@ export const calculateDamage = (
     defenseStat = floorDivide(defenseStat, 4);
   }
 
-  // Core formula: ((2 * Level * Critical / 5 + 2) * Power * A/D / 50 + 2)
-  const levelCritical = floorDivide(2 * attackerLevel * isCritical, 5);
-  const baseCalc = floorDivide(
-    floorDivide((levelCritical + 2) * movePower * attackStat, defenseStat),
-    50
+  // Effective Speed for both sides — only needed by Electro Ball/Gyro Ball,
+  // but cheap enough to always compute rather than gate on move identity.
+  const attackerSpeed = applyStatStage(
+    calculateStat(
+      attacker.baseStat.spe,
+      attacker.iv?.spe ?? 31,
+      attacker.ev?.spe || 0,
+      attackerLevel,
+      getNatureMultiplier(attacker.natureData, 'spe')
+    ),
+    attacker.statStages?.spe ?? 0
   );
-  let preRollDamage = baseCalc + 2;
+  const defenderSpeed = applyStatStage(
+    calculateStat(
+      defender.baseStat.spe,
+      defender.iv?.spe ?? 31,
+      defender.ev?.spe || 0,
+      defenderLevel,
+      getNatureMultiplier(defender.natureData, 'spe')
+    ),
+    defender.statStages?.spe ?? 0
+  );
 
-  // Field-wide modifiers that apply BEFORE the random roll (this ordering
-  // matters: it's what produces the real game's characteristic pattern of
-  // duplicate values among the 16 rolls, since later floor() steps can
-  // collapse two different rolls onto the same final integer)
-  if (fieldState.isDoublesFormat && attacker.move?.targetsMultiple) {
-    // Real multi-target reduction is 3072/4096 (=0.75), round-half-up —
-    // NOT a plain floor(x * 0.75), which under-rounds by 1 in many cases
-    preRollDamage = roundDivide4096(preRollDamage, 3072);
-  }
-  preRollDamage = applyWeatherModifier(preRollDamage, moveType, fieldState.weather);
-  preRollDamage = applyTerrainModifier(preRollDamage, moveType, fieldState.terrain, attacker.types);
-  preRollDamage = applyRuinModifier(preRollDamage, defender.ability);
-  preRollDamage = Math.max(1, Math.floor(preRollDamage));
+  // Resolve the move's actual per-hit power(s). Most moves are a single
+  // flat number; weight/speed/fainted-ally-dependent moves compute one
+  // number; multi-hit moves return one power PER hit (uniform for most,
+  // an escalating table for Triple Axel/Triple Kick, per-team-member base
+  // Attack for Beat Up).
+  const { perHitPowers } = getEffectiveMovePower(attacker.move, {
+    attackerSpeed,
+    defenderSpeed,
+    defenderWeightKg: defender.species?.weightKg,
+    attackerBaseAtk: attacker.baseStat?.atk,
+    faintedAllies: attacker.move?.faintedAllies,
+    hitCount: attacker.move?.hitCount,
+    teamBaseAttacks: attacker.move?.teamBaseAttacks,
+  });
 
-  // STAB / type effectiveness — same for every roll, computed once
+  // STAB / type effectiveness — same for every hit, computed once
   const hasSTAB =
     attacker.types?.includes(moveType) ||
     (attacker.teraType === moveType && !attacker.types?.includes(moveType));
@@ -172,16 +197,54 @@ export const calculateDamage = (
 
   // Compute all 16 discrete damage rolls (random 85%-100%, applied first,
   // then STAB -> type -> item -> ability, each floored in sequence —
-  // matching in-game modifier order rather than a min/max shortcut)
-  const rolls = [];
-  for (let rollPercent = 85; rollPercent <= 100; rollPercent++) {
-    let d = floorDivide(preRollDamage * rollPercent, 100);
-    d = Math.floor(d * stabMultiplier);
-    d = Math.floor(d * typeEffect);
-    d = applyItemModifier(d, attacker.item, moveCategory);
-    d = applyAbilityModifier(d, attacker.ability, moveType);
-    d = Math.max(1, Math.floor(d));
-    rolls.push(d);
+  // matching in-game modifier order rather than a min/max shortcut).
+  // For multi-hit moves, EACH hit runs this entire pipeline independently
+  // with its own power and its own flooring, then hits are summed — NOT
+  // summed-power-then-floored-once, which silently overcounts (floor(a)+
+  // floor(b) <= floor(a+b) in general, so a single combined pass over-
+  // estimates total damage for hits with different power, e.g. Triple Axel).
+  const rolls = new Array(16).fill(0);
+  for (const hitPower of perHitPowers) {
+    // Core formula: ((2 * Level / 5 + 2) * Power * A/D / 50 + 2) — no
+    // crit term here (Gen 6+); the crit multiplier is applied below instead.
+    const levelFactor = floorDivide(2 * attackerLevel, 5);
+    const baseCalc = floorDivide(
+      floorDivide((levelFactor + 2) * hitPower * attackStat, defenseStat),
+      50
+    );
+    let preRollDamage = baseCalc + 2;
+
+    // Field-wide modifiers that apply BEFORE the random roll — same for
+    // every hit of the same move within one turn
+    if (fieldState.isDoublesFormat && attacker.move?.targetsMultiple) {
+      // Real multi-target reduction is 3072/4096 (=0.75), round-half-up —
+      // NOT a plain floor(x * 0.75), which under-rounds by 1 in many cases
+      preRollDamage = roundDivide4096(preRollDamage, 3072);
+    }
+    preRollDamage = applyWeatherModifier(preRollDamage, moveType, fieldState.weather);
+    if (isCritHit) {
+      // Gen 6+ critical hit: flat 1.5x — plain floor, NOT the round-half-up
+      // convention used by the multi-target reduction above. Verified against
+      // a real matchup: floor(81*1.5)=121 matches the reference exactly,
+      // while round-half-up(81, 6144/4096)=122 does not.
+      preRollDamage = Math.floor(preRollDamage * 1.5);
+    }
+    preRollDamage = applyTerrainModifier(preRollDamage, moveType, fieldState.terrain, attacker.types);
+    preRollDamage = applyRuinModifier(preRollDamage, defender.ability);
+    preRollDamage = Math.max(1, Math.floor(preRollDamage));
+
+    for (let i = 0; i < 16; i++) {
+      const rollPercent = 85 + i;
+      let d = floorDivide(preRollDamage * rollPercent, 100);
+      d = Math.floor(d * stabMultiplier);
+      d = Math.floor(d * typeEffect);
+      d = applyItemModifier(d, attacker.item, moveCategory);
+      d = applyAbilityModifier(d, attacker.ability, moveType);
+      // The "at least 1 damage" floor should NOT apply to true immunities —
+      // typeEffect === 0 means 0 damage, full stop, not 1.
+      d = typeEffect === 0 ? 0 : Math.max(1, Math.floor(d));
+      rolls[i] += d;
+    }
   }
 
   const minDamage = rolls[0];
