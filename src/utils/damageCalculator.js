@@ -188,7 +188,8 @@ export const calculateDamage = (
 
   // Effective Speed for both sides — only needed by Electro Ball/Gyro Ball,
   // but cheap enough to always compute rather than gate on move identity.
-  const attackerSpeed = applyStatStage(
+  // Tailwind doubles it for whichever side has it active.
+  let attackerSpeed = applyStatStage(
     calculateStat(
       attacker.baseStat.spe,
       attacker.iv?.spe ?? 31,
@@ -198,7 +199,9 @@ export const calculateDamage = (
     ),
     attacker.statStages?.spe ?? 0
   );
-  const defenderSpeed = applyStatStage(
+  if (attacker.fieldEffects?.tailwind) attackerSpeed *= 2;
+
+  let defenderSpeed = applyStatStage(
     calculateStat(
       defender.baseStat.spe,
       defender.iv?.spe ?? 31,
@@ -208,6 +211,7 @@ export const calculateDamage = (
     ),
     defender.statStages?.spe ?? 0
   );
+  if (defender.fieldEffects?.tailwind) defenderSpeed *= 2;
 
   // Resolve the move's actual per-hit power(s). Most moves are a single
   // flat number; weight/speed/fainted-ally-dependent moves compute one
@@ -234,22 +238,50 @@ export const calculateDamage = (
   if (defender.teraType) {
     defenderTypes = [defender.teraType];
   }
-  const typeEffect = getTypeEffectiveness(moveType, defenderTypes[0], defenderTypes[1], typeChart);
+  let typeEffect = getTypeEffectiveness(moveType, defenderTypes[0], defenderTypes[1], typeChart);
+  // Delta Stream and Gravity both selectively override the normal type
+  // chart for specific matchups (Flying's weakness to Rock/Ice/Electric,
+  // and Flying/Levitate's immunity to Ground, respectively) — apply
+  // whichever one is relevant instead of the plain chart lookup.
+  const deltaStreamEffect = getDeltaStreamAdjustedTypeEffect(moveType, defenderTypes, typeChart);
+  if (deltaStreamEffect != null && fieldState.weather === 'Delta Stream') {
+    typeEffect = deltaStreamEffect;
+  }
+  const gravityEffect = getGravityAdjustedTypeEffect(moveType, defenderTypes, typeChart, fieldState.gravity);
+  if (gravityEffect != null) {
+    typeEffect = gravityEffect;
+  }
 
-  // Ability-based full immunities (Water Absorb, Levitate, Wonder Guard, ...)
-  // and priority-blocking abilities (Armor Tail/Dazzling/Queenly Majesty) —
-  // both mean the move does 0 damage outright, same as a type immunity.
-  // Mold Breaker-class attackers bypass all of this.
+  // Grounding — determines whether Grassy/Electric/Psychic Terrain's power
+  // boost applies to the attacker, and whether Misty Terrain's Dragon
+  // reduction applies to the defender. Gravity grounds everyone.
+  const attackerGrounded = isGrounded(attacker, fieldState.gravity);
+  const defenderGrounded = isGrounded(defender, fieldState.gravity);
+
+  // Ability-based full immunities (Water Absorb, Levitate, Wonder Guard, ...),
+  // priority-blocking abilities (Armor Tail/Dazzling/Queenly Majesty), and
+  // extreme-weather move-type nullification (Desolate Land blocks Water,
+  // Primordial Sea blocks Fire) — all mean the move does 0 damage outright.
+  // Mold Breaker-class attackers bypass the ability-based ones (not the
+  // weather one — that's not an ability effect).
   const abilityBlocksMove =
-    isTypeImmune(defender.ability, moveType, typeEffect, attackerHasMoldBreaker) ||
+    isTypeImmune(defender.ability, moveType, typeEffect, attackerHasMoldBreaker, fieldState.gravity) ||
     isPriorityBlocked(defender.ability, attacker.move?.priority, attackerHasMoldBreaker);
+  const weatherBlocksMove = isWeatherBlocked(fieldState.weather, moveType);
+  const moveBlocked = abilityBlocksMove || weatherBlocksMove;
 
   // Flat damage-reduction abilities (Multiscale, Filter/Solid Rock/Prism
   // Armor, Thick Fat, Heatproof, Dry Skin's Fire weakness) — combine
   // multiplicatively with everything else in the per-roll loop below.
-  const defensiveAbilityMultiplier = abilityBlocksMove
+  const defensiveAbilityMultiplier = moveBlocked
     ? 1
     : getDefensiveDamageMultiplier(defender.ability, moveType, typeEffect, attackerHasMoldBreaker);
+
+  // Screens (Light Screen/Reflect/Aurora Veil) protecting the defender's
+  // side, and Helping Hand boosting the attacker's side — both per-side
+  // field conditions carried on each Pokémon's own fieldEffects.
+  const screenMultiplier = getScreenMultiplier(defender.fieldEffects, moveCategory, fieldState.isDoublesFormat, attacker.move?.targetsMultiple);
+  const helpingHandMultiplier = getHelpingHandMultiplier(attacker.fieldEffects);
 
   // Compute all 16 discrete damage rolls (random 85%-100%, applied first,
   // then STAB -> type -> item -> ability, each floored in sequence —
@@ -260,7 +292,7 @@ export const calculateDamage = (
   // floor(b) <= floor(a+b) in general, so a single combined pass over-
   // estimates total damage for hits with different power, e.g. Triple Axel).
   const rolls = new Array(16).fill(0);
-  if (!abilityBlocksMove) {
+  if (!moveBlocked) {
     for (const hitPower of perHitPowers) {
       // Core formula: ((2 * Level / 5 + 2) * Power * A/D / 50 + 2) — no
       // crit term here (Gen 6+); the crit multiplier is applied below instead.
@@ -286,7 +318,9 @@ export const calculateDamage = (
         // while round-half-up(81, 6144/4096)=122 does not.
         preRollDamage = Math.floor(preRollDamage * 1.5);
       }
-      preRollDamage = applyTerrainModifier(preRollDamage, moveType, fieldState.terrain, attacker.types);
+      if (attackerGrounded) {
+        preRollDamage = applyTerrainModifier(preRollDamage, moveType, fieldState.terrain);
+      }
       preRollDamage = applyRuinModifier(preRollDamage, defender.ability);
       preRollDamage = Math.max(1, Math.floor(preRollDamage));
 
@@ -295,9 +329,14 @@ export const calculateDamage = (
         let d = floorDivide(preRollDamage * rollPercent, 100);
         d = Math.floor(d * stabMultiplier);
         d = Math.floor(d * typeEffect);
+        if (defenderGrounded) {
+          d = applyMistyTerrainModifier(d, moveType, fieldState.terrain);
+        }
         d = applyItemModifier(d, attacker.item, moveCategory);
         d = applyAbilityModifier(d, attacker.ability, moveType);
         d = Math.floor(d * defensiveAbilityMultiplier);
+        d = Math.floor(d * screenMultiplier);
+        d = Math.floor(d * helpingHandMultiplier);
         // The "at least 1 damage" floor should NOT apply to true immunities —
         // typeEffect === 0 means 0 damage, full stop, not 1.
         d = typeEffect === 0 ? 0 : Math.max(1, Math.floor(d));
@@ -400,12 +439,18 @@ const applyAbilityModifier = (damage, ability, moveType) => {
 };
 
 /**
- * Apply weather modifiers
+ * Apply weather modifiers. Includes the three "extreme" weathers from
+ * Primal Reversion / Mega Rayquaza — Desolate Land and Primordial Sea boost
+ * Fire/Water the same way their normal counterparts do (see
+ * isWeatherBlocked below for the "opposing type fails outright" part,
+ * handled separately since that's not a simple multiplier).
  */
 const applyWeatherModifier = (damage, moveType, weather) => {
   const weatherMult = {
     'Harsh Sunlight': moveType === 'Fire' ? 1.5 : moveType === 'Water' ? 0.5 : 1,
     'Rain': moveType === 'Water' ? 1.5 : moveType === 'Fire' ? 0.5 : 1,
+    'Desolate Land': moveType === 'Fire' ? 1.5 : 1, // Water's 0.5x doesn't apply — it fails outright instead
+    'Primordial Sea': moveType === 'Water' ? 1.5 : 1, // Fire's 0.5x doesn't apply — it fails outright instead
     'Sandstorm': 1, // Affects Special Defense, not damage
     'Hail': 1,
   };
@@ -413,18 +458,106 @@ const applyWeatherModifier = (damage, moveType, weather) => {
 };
 
 /**
- * Apply terrain modifiers
+ * Desolate Land / Primordial Sea don't just weaken the opposing type — they
+ * make it fail completely (0 damage), same treatment as a type immunity.
  */
-const applyTerrainModifier = (damage, moveType, terrain, attackerTypes) => {
-  // Terrain modifiers vary; Grassy Terrain boosts Grass moves for grounded Pokemon
+const isWeatherBlocked = (weather, moveType) => {
+  if (weather === 'Desolate Land' && moveType === 'Water') return true;
+  if (weather === 'Primordial Sea' && moveType === 'Fire') return true;
+  return false;
+};
+
+/**
+ * Whether a Pokémon is grounded — matters for terrain (only affects
+ * grounded Pokémon) and for Ground-type move immunity. Gravity grounds
+ * everything regardless of type or ability.
+ */
+const isGrounded = (pokemon, gravityActive) => {
+  if (gravityActive) return true;
+  if (pokemon?.ability === 'Levitate') return false;
+  if (pokemon?.types?.includes('Flying')) return false;
+  return true;
+};
+
+/**
+ * Delta Stream (Mega Rayquaza's ability / weather) neutralizes Flying-types'
+ * weakness to Rock/Ice/Electric specifically — those hits become neutral
+ * against the Flying part of a type combo, while any other type the
+ * defender has is unaffected.
+ */
+const getDeltaStreamAdjustedTypeEffect = (moveType, defenderTypes, typeChart) => {
+  if (!['Rock', 'Ice', 'Electric'].includes(moveType)) return null;
+  if (!defenderTypes.includes('Flying')) return null;
+  let effect = 1;
+  defenderTypes.forEach((t) => {
+    if (t === 'Flying') return; // neutralized — contributes 1x, i.e. skip
+    effect *= typeChart[moveType]?.[t] ?? 1;
+  });
+  return effect;
+};
+
+/**
+ * Gravity grounds Flying-types and Levitate users, removing their immunity
+ * to Ground-type moves. Only Ground moves are affected — everything else
+ * about their typing/ability stays the same.
+ */
+const getGravityAdjustedTypeEffect = (moveType, defenderTypes, typeChart, gravityActive) => {
+  if (!gravityActive || moveType !== 'Ground' || !defenderTypes.includes('Flying')) return null;
+  let effect = 1;
+  defenderTypes.forEach((t) => {
+    if (t === 'Flying') return; // grounded by Gravity — no longer immune, contributes 1x here
+    effect *= typeChart[moveType]?.[t] ?? 1;
+  });
+  return effect;
+};
+
+/**
+ * Apply terrain modifiers — only affects GROUNDED Pokémon (checked by the
+ * caller before calling this, via isGrounded). Grassy/Electric/Psychic
+ * Terrain boost the attacker's matching-type moves; Misty Terrain instead
+ * halves Dragon-type damage taken by a grounded defender (handled by a
+ * separate function below since it's defender-side, not attacker-side).
+ */
+const applyTerrainModifier = (damage, moveType, terrain) => {
   const terrainMult = {
     'Grassy Terrain': moveType === 'Grass' ? 1.5 : 1,
     'Electric Terrain': moveType === 'Electric' ? 1.5 : 1,
     'Psychic Terrain': moveType === 'Psychic' ? 1.5 : 1,
-    'Misty Terrain': 1, // Defensive
   };
   return Math.floor(damage * (terrainMult[terrain] || 1));
 };
+
+/** Misty Terrain halves Dragon-type damage against a grounded defender. */
+const applyMistyTerrainModifier = (damage, moveType, terrain) => {
+  if (terrain === 'Misty Terrain' && moveType === 'Dragon') {
+    return Math.floor(damage * 0.5);
+  }
+  return damage;
+};
+
+/**
+ * Light Screen / Reflect / Aurora Veil — halve damage of the category they
+ * cover, or 2732/4096 (round-half-up, weaker reduction) instead of a flat
+ * half when a spread move hits multiple targets in Doubles. Not verified
+ * against a real number the way the multi-target reduction was — this is
+ * the documented mechanic, but flagging the rounding specifically as
+ * best-effort rather than confirmed.
+ */
+const getScreenMultiplier = (defenderFieldEffects, moveCategory, isDoublesFormat, movetargetsMultiple) => {
+  if (!defenderFieldEffects) return 1;
+  const covered =
+    defenderFieldEffects.auroraVeil ||
+    (moveCategory === 'Special' && defenderFieldEffects.lightScreen) ||
+    (moveCategory === 'Physical' && defenderFieldEffects.reflect);
+  if (!covered) return 1;
+  if (isDoublesFormat && movetargetsMultiple) {
+    return 2732 / 4096; // ~0.667x — weaker reduction for a spread move hitting multiple targets in Doubles
+  }
+  return 0.5;
+};
+
+/** Helping Hand: flat 1.5x on the receiving attacker's damage. */
+const getHelpingHandMultiplier = (attackerFieldEffects) => (attackerFieldEffects?.helpingHand ? 1.5 : 1);
 
 /**
  * Apply Ruin ability modifiers

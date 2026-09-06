@@ -19,7 +19,7 @@ const MOVE_SLOT_COUNT = 4;
  * opponent, a per-move critical-hit toggle, and (when relevant) a hit-count
  * or fainted-ally control for moves whose power/hits depend on them.
  */
-export default function MoveSelector({ pokemon, setPokemon, opponent, fieldState, allMoves, allMovesLoading, onMoveSlotChange, teamBaseAttacks }) {
+export default function MoveSelector({ pokemon, setPokemon, opponent, fieldState, allMoves, allMovesLoading, onMoveSlotChange, teamBaseAttacks, mySideEffects, opponentSideEffects }) {
   const getQuickPreview = (slot) => {
     const moveDetails = slot.details;
     if (!moveDetails || !pokemon?.species || !opponent?.species) return '0 - 0%';
@@ -32,8 +32,8 @@ export default function MoveSelector({ pokemon, setPokemon, opponent, fieldState
         teamBaseAttacks,
       };
       const result = calculateDamage(
-        { ...buildCombatant(withIncomingEffects(pokemon, opponent)), move: moveForCalc, isCritical: slot.isCritical },
-        buildCombatant(opponent),
+        { ...buildCombatant(withIncomingEffects(pokemon, opponent)), move: moveForCalc, isCritical: slot.isCritical, fieldEffects: mySideEffects },
+        { ...buildCombatant(withIncomingEffects(opponent, pokemon)), fieldEffects: opponentSideEffects },
         fieldState || {},
         TYPE_CHART
       );

@@ -2,7 +2,9 @@
  * PokeAPI integration layer.
  * Fetches Pokémon and move data directly from https://pokeapi.co at runtime.
  *
- * - fetchPokemon() gets types/stats/sprite/abilities for a species.
+ * - fetchPokemon() gets types/stats/sprite/abilities for a species. Checks
+ *   CUSTOM_SPECIES first for forms PokeAPI doesn't have yet (new Legends
+ *   Z-A Megas) before hitting the network.
  * - fetchAllMoveNames() gets the full move list once per session (for the
  *   move picker dropdown — every move, not just ones a given species learns).
  * - fetchMoveDetails() is called lazily for whichever move the user selects,
@@ -10,6 +12,7 @@
  *
  * All three are cached in-memory for the session.
  */
+import { CUSTOM_SPECIES } from '../data/customSpecies';
 
 const POKEAPI_BASE = 'https://pokeapi.co/api/v2';
 
@@ -38,6 +41,11 @@ const STAT_KEY_MAP = {
  */
 export async function fetchPokemon(speciesSlug) {
   const key = speciesSlug.toLowerCase();
+
+  if (CUSTOM_SPECIES[key]) {
+    pokemonCache.set(key, CUSTOM_SPECIES[key]);
+    return CUSTOM_SPECIES[key];
+  }
 
   if (pokemonCache.has(key)) {
     return pokemonCache.get(key);

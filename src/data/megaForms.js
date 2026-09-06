@@ -55,4 +55,15 @@ export const MEGA_FORMS = {
   gallade: ['gallade-mega'],
   audino: ['audino-mega'],
   diancie: ['diancie-mega'],
+  // Legends: Z-A new Mega — verified stats (see customSpecies.js). The other
+  // ~25 new Z-A Megas (Victreebel, Clefable, Starmie, Meganium, Feraligatr,
+  // Skarmory, Froslass, Emboar, Excadrill, Scrafty, Scolipede, Eelektross,
+  // Chandelure, Chesnaught, Delphox, Greninja, Pyroar, Malamar, Barbaracle,
+  // Dragalge, Hawlucha, Zygarde, Drampa, Falinks, plus DLC additions like
+  // Chimecho/Baxcalibur/Raichu/Zeraora/Staraptor/Heatran/Darkrai/Golurk/
+  // Meowstic) aren't added here yet — I don't have verified stat spreads
+  // for them and didn't want to guess. Same process as Dragonite once
+  // real data's available: add stats to customSpecies.js, then the slug
+  // here.
+  dragonite: ['dragonite-mega-za'],
 };

@@ -106,11 +106,7 @@ export const makeDefaultPokemon = (speciesSlug) => ({
 export const makeTeam = () => Array.from({ length: TEAM_SIZE }, () => null);
 
 /** A "side" (what used to be a single Pokémon) is now a roster of teams. */
-export const makeInitialSide = (firstSlug) => {
-  const team = makeTeam();
-  team[0] = makeDefaultPokemon(firstSlug);
-  return { teams: [team], activeTeamIndex: 0, activeSlotIndex: 0 };
-};
+export const makeInitialSide = () => ({ teams: [makeTeam()], activeTeamIndex: 0, activeSlotIndex: 0 });
 
 /** The currently-active team member for a side, or null if that slot is empty. */
 export const activePokemon = (side) => side.teams[side.activeTeamIndex][side.activeSlotIndex];

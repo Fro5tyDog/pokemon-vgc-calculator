@@ -52,11 +52,15 @@ const PRIORITY_BLOCKING_ABILITIES = new Set(['Armor Tail', 'Dazzling', 'Queenly 
 /**
  * Full immunity check (0 damage). Returns true if the defender's ability
  * blocks this move type entirely and the attacker doesn't bypass it.
+ * Gravity grounds Levitate users, removing their Ground immunity — that
+ * specific case is checked here since it's ability-driven; the Flying-type
+ * Ground immunity itself is handled separately in damageCalculator.js via
+ * the type chart (since it's type-based, not ability-based).
  */
-export function isTypeImmune(defenderAbility, moveType, typeEffect, attackerHasMoldBreaker) {
+export function isTypeImmune(defenderAbility, moveType, typeEffect, attackerHasMoldBreaker, gravityActive) {
   if (attackerHasMoldBreaker) return false;
   if (TYPE_ABSORB_ABILITIES[defenderAbility] === moveType) return true;
-  if (defenderAbility === LEVITATE && moveType === 'Ground') return true;
+  if (defenderAbility === LEVITATE && moveType === 'Ground' && !gravityActive) return true;
   if (defenderAbility === WONDER_GUARD && typeEffect <= 1) return true;
   return false;
 }
