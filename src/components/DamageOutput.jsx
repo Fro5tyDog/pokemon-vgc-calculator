@@ -13,10 +13,10 @@ export default function DamageOutput({ result, summaryLine }) {
   const { rolls } = result;
 
   return (
-    <div style={{ padding: '6px 0', fontSize: '14px' }}>
+    <div style={{ padding: '2px 0', fontSize: '0.95em' }}>
       {summaryLine && <div>{summaryLine}</div>}
       {rolls && rolls.length > 0 && (
-        <div style={{ marginTop: '4px', fontSize: '13px', color: '#666', fontFamily: 'monospace' }}>
+        <div style={{ marginTop: '2px', fontSize: '0.9em', color: '#666', fontFamily: 'monospace' }}>
           ({rolls.join(', ')})
         </div>
       )}

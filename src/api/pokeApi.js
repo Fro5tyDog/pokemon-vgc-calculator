@@ -65,7 +65,12 @@ export async function fetchPokemon(speciesSlug) {
     // PokeAPI reports weight in hectograms (1 hg = 0.1 kg) — needed for
     // weight-based moves like Low Kick / Grass Knot / Heavy Slam / Heat Crash.
     weightKg: typeof data.weight === 'number' ? data.weight / 10 : null,
+    // Prefer the animated Gen 5 (Black/White) DS-style sprite when PokeAPI
+    // has one — only exists for Pokémon that existed by Gen 5, so most
+    // newer species (Paradoxes, Paldean forms, Gen 6+) fall back to the
+    // official artwork, then the plain default sprite.
     sprite:
+      data.sprites?.versions?.['generation-v']?.['black-white']?.animated?.front_default ||
       data.sprites?.other?.['official-artwork']?.front_default ||
       data.sprites?.front_default ||
       '',
@@ -144,8 +149,8 @@ export async function fetchAllSpeciesNames() {
         slugs.push(s.name);
       }
     });
-    allSpeciesCache = slugs;
-    return slugs;
+    allSpeciesCache = slugs.map((slug) => ({ name: toTitleCase(slug), apiName: slug }));
+    return allSpeciesCache;
   })();
 
   return allSpeciesPromise;
@@ -214,6 +219,9 @@ export async function fetchMoveDetails(moveApiName) {
     // report a min/max hit count here. null/null means single-hit.
     minHits: data.meta?.min_hits ?? null,
     maxHits: data.meta?.max_hits ?? null,
+    // Needed for Armor Tail/Dazzling/Queenly Majesty, which block moves
+    // with positive priority (e.g. Fake Out, Sucker Punch, quick moves).
+    priority: data.priority || 0,
   };
 
   moveCache.set(moveApiName, result);

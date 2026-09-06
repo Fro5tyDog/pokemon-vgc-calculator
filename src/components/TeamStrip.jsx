@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { fetchPokemon, fetchAllSpeciesNames } from '../api/pokeApi';
-import { makeDefaultPokemon, makeTeam, TEAM_SIZE } from '../utils/combatant';
+import { makeDefaultPokemon, makeTeam, TEAM_SIZE, getEffectiveSpecies } from '../utils/combatant';
+import SearchableSelect from './SearchableSelect';
 
 const slugToLabel = (slug) =>
   slug
@@ -8,7 +9,7 @@ const slugToLabel = (slug) =>
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
     .join(' ');
 
-const BOX_SIZE = 52;
+const BOX_SIZE = 38;
 
 /**
  * Replaces the old single "Pokémon: [dropdown]" row — a row of 6 team-slot
@@ -112,8 +113,8 @@ export default function TeamStrip({ side, setSide }) {
   };
 
   return (
-    <div style={{ marginBottom: '10px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px', fontSize: '0.85em', color: '#666' }}>
+    <div style={{ marginBottom: '4px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '3px', fontSize: '0.8em', color: '#666' }}>
         <button
           onClick={() => gotoTeam(-1)}
           disabled={side.activeTeamIndex === 0}
@@ -140,11 +141,8 @@ export default function TeamStrip({ side, setSide }) {
 
           if (!slot) {
             return (
-              <select
+              <div
                 key={index}
-                value=""
-                disabled={allSpeciesLoading}
-                onChange={(e) => pickSpeciesForSlot(index, e.target.value)}
                 title={allSpeciesLoading ? 'Loading species list...' : 'Pick a Pokémon for this slot'}
                 style={{
                   width: `${BOX_SIZE}px`,
@@ -154,23 +152,34 @@ export default function TeamStrip({ side, setSide }) {
                   background: '#fafafa',
                   color: '#999',
                   fontSize: '11px',
-                  textAlign: 'center',
-                  cursor: allSpeciesLoading ? 'default' : 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  position: 'relative',
                 }}
               >
-                <option value="">{allSpeciesLoading ? '...' : '+'}</option>
-                {allSpecies.map((s) => (
-                  <option key={s} value={s}>{slugToLabel(s)}</option>
-                ))}
-              </select>
+                {allSpeciesLoading ? (
+                  '...'
+                ) : (
+                  <SearchableSelect
+                    options={allSpecies}
+                    value=""
+                    onChange={(slug) => pickSpeciesForSlot(index, slug)}
+                    placeholder="+"
+                    triggerStyle={{ textAlign: 'center', fontSize: '16px', color: '#999' }}
+                  />
+                )}
+              </div>
             );
           }
+
+          const effectiveSpecies = getEffectiveSpecies(slot);
 
           return (
             <div
               key={index}
               onClick={() => selectSlot(index)}
-              title={slot.species?.name || slugToLabel(slot.speciesSlug)}
+              title={effectiveSpecies?.name || slugToLabel(slot.speciesSlug)}
               style={{
                 position: 'relative',
                 width: `${BOX_SIZE}px`,
@@ -213,8 +222,8 @@ export default function TeamStrip({ side, setSide }) {
               <div style={{ width: '100%', height: '100%', overflow: 'hidden', borderRadius: '2px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 {slot.speciesLoading && <span style={{ fontSize: '10px', color: '#999' }}>...</span>}
                 {slot.speciesError && <span style={{ fontSize: '10px', color: '#c00' }}>!</span>}
-                {slot.species?.sprite && (
-                  <img src={slot.species.sprite} alt={slot.species.name} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                {effectiveSpecies?.sprite && (
+                  <img src={effectiveSpecies.sprite} alt={effectiveSpecies.name} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
                 )}
               </div>
             </div>

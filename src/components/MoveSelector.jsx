@@ -1,6 +1,6 @@
 import React from 'react';
 import { calculateDamage } from '../utils/damageCalculator';
-import { buildCombatant } from '../utils/combatant';
+import { buildCombatant, withIncomingEffects } from '../utils/combatant';
 import { TYPE_CHART } from '../data/gameData';
 import {
   isAlwaysCrit,
@@ -8,6 +8,7 @@ import {
   needsFaintedAllyCount,
   isBeatUp,
 } from '../utils/specialMoves';
+import SearchableSelect from './SearchableSelect';
 
 const MOVE_SLOT_COUNT = 4;
 
@@ -31,7 +32,7 @@ export default function MoveSelector({ pokemon, setPokemon, opponent, fieldState
         teamBaseAttacks,
       };
       const result = calculateDamage(
-        { ...buildCombatant(pokemon), move: moveForCalc, isCritical: slot.isCritical },
+        { ...buildCombatant(withIncomingEffects(pokemon, opponent)), move: moveForCalc, isCritical: slot.isCritical },
         buildCombatant(opponent),
         fieldState || {},
         TYPE_CHART
@@ -55,17 +56,17 @@ export default function MoveSelector({ pokemon, setPokemon, opponent, fieldState
   const containerStyle = {
     border: '1px solid #ddd',
     borderRadius: '6px',
-    padding: '10px',
-    flex: '1 1 320px',
-    minWidth: '280px',
-    minHeight: '230px',
+    padding: '6px',
+    flex: '1 1 300px',
+    minWidth: '260px',
+    minHeight: '160px',
     boxSizing: 'border-box',
   };
 
   if (!pokemon || !pokemon.species) {
     return (
       <div style={{ ...containerStyle, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <div style={{ textAlign: 'center', color: '#999', fontSize: '1.05em', padding: '20px' }}>
+        <div style={{ textAlign: 'center', color: '#999', padding: '10px', fontSize: '0.95em' }}>
           {pokemon?.speciesError
             ? `Error: ${pokemon.speciesError}`
             : pokemon?.speciesLoading
@@ -78,7 +79,7 @@ export default function MoveSelector({ pokemon, setPokemon, opponent, fieldState
 
   return (
     <div style={containerStyle}>
-      <div style={{ fontSize: '0.85em', color: '#666', marginBottom: '8px' }}>
+      <div style={{ fontSize: '0.85em', color: '#666', marginBottom: '5px' }}>
         {pokemon.species?.name || 'Pokémon'}'s Moves (select one to show detailed results)
       </div>
       {Array.from({ length: MOVE_SLOT_COUNT }).map((_, index) => {
@@ -94,8 +95,8 @@ export default function MoveSelector({ pokemon, setPokemon, opponent, fieldState
           <div
             key={index}
             style={{
-              marginBottom: '4px',
-              borderRadius: '4px',
+              marginBottom: '2px',
+              borderRadius: '3px',
               backgroundColor: isActive ? '#3a4a6b' : '#eaeaef',
               color: isActive ? '#fff' : '#333',
             }}
@@ -107,7 +108,7 @@ export default function MoveSelector({ pokemon, setPokemon, opponent, fieldState
                 alignItems: 'center',
                 justifyContent: 'space-between',
                 gap: '8px',
-                padding: '6px 10px',
+                padding: '3px 6px',
                 cursor: slot.apiName ? 'pointer' : 'default',
               }}
             >
@@ -128,14 +129,13 @@ export default function MoveSelector({ pokemon, setPokemon, opponent, fieldState
                 {slot.details?.name || (allMovesLoading ? 'Loading...' : `Move ${index + 1}: (none)`)}
               </span>
 
-              {/* Small dedicated "change move" control — a native select
-                  sized down to just an icon so it never overlaps with the
-                  "click to activate" area above. */}
+              {/* Small dedicated "change move" control — a searchable
+                  dropdown sized down to just an icon, so it never overlaps
+                  with the "click to activate" area above. */}
               <div
                 onClick={(e) => e.stopPropagation()}
                 title="Change this move"
                 style={{
-                  position: 'relative',
                   width: '24px',
                   height: '24px',
                   minWidth: '24px',
@@ -145,23 +145,16 @@ export default function MoveSelector({ pokemon, setPokemon, opponent, fieldState
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  cursor: allMovesLoading ? 'default' : 'pointer',
                 }}
               >
-                <span style={{ fontSize: '12px', pointerEvents: 'none' }}>✎</span>
-                <select
+                <SearchableSelect
+                  options={allMoves}
                   value={slot.apiName}
+                  onChange={(apiName) => onMoveSlotChange(index, apiName)}
                   disabled={allMovesLoading}
-                  onChange={(e) => onMoveSlotChange(index, e.target.value)}
-                  style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', opacity: 0, cursor: 'inherit' }}
-                >
-                  <option value="">{allMovesLoading ? 'Loading...' : '(No Move)'}</option>
-                  {allMoves.map((m) => (
-                    <option key={m.apiName} value={m.apiName}>
-                      {m.name}
-                    </option>
-                  ))}
-                </select>
+                  fixedTriggerLabel="✎"
+                  triggerStyle={{ textAlign: 'center', fontSize: '12px', color: 'inherit' }}
+                />
               </div>
 
               {slot.apiName && (
@@ -188,7 +181,7 @@ export default function MoveSelector({ pokemon, setPokemon, opponent, fieldState
             {hitRange && (
               <div
                 onClick={(e) => e.stopPropagation()}
-                style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '0 10px 6px 10px', fontSize: '0.8em' }}
+                style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '0 6px 4px 6px', fontSize: '0.75em' }}
               >
                 <span>Hits:</span>
                 <select
@@ -206,7 +199,7 @@ export default function MoveSelector({ pokemon, setPokemon, opponent, fieldState
             {/* Beat Up's hit count is now automatic — one hit per populated
                 team slot, per pokemondb's explanation of the mechanic */}
             {showBeatUpInfo && (
-              <div style={{ padding: '0 10px 6px 10px', fontSize: '0.8em', opacity: 0.85 }}>
+              <div style={{ padding: '0 6px 4px 6px', fontSize: '0.75em', opacity: 0.85 }}>
                 {teamBaseAttacks && teamBaseAttacks.length > 0
                   ? `${teamBaseAttacks.length} hit(s), one per team member`
                   : 'Add team members for accurate hits (using this Pokémon alone for now)'}
@@ -218,7 +211,7 @@ export default function MoveSelector({ pokemon, setPokemon, opponent, fieldState
             {showFaintedAllies && (
               <div
                 onClick={(e) => e.stopPropagation()}
-                style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '0 10px 6px 10px', fontSize: '0.8em' }}
+                style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '0 6px 4px 6px', fontSize: '0.75em' }}
               >
                 <span>Fainted allies:</span>
                 <select

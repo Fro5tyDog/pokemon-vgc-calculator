@@ -18,6 +18,29 @@ export const ALWAYS_CRIT_MOVES = new Set([
 
 export const isAlwaysCrit = (moveApiName) => ALWAYS_CRIT_MOVES.has(moveApiName);
 
+/**
+ * Moves where the ATTACKING side's stat isn't the normal category-based
+ * default (Attack for Physical, Sp. Atk for Special). Each entry says which
+ * stat to use instead, and whose stat it is ("attacker" — still the user's
+ * own stat, just a different one; or "defender" — Foul Play reads the
+ * TARGET's stat instead of the user's own).
+ */
+export const ATTACK_STAT_OVERRIDES = {
+  'body-press': { owner: 'attacker', stat: 'def' }, // uses the user's own Defense, not Attack
+  'foul-play': { owner: 'defender', stat: 'atk' }, // uses the TARGET's Attack stat
+};
+
+/**
+ * Moves where the DEFENDING side's stat isn't the normal category-based
+ * default — these are Special moves that are compared against the
+ * target's physical Defense instead of Sp. Def.
+ */
+export const DEFENSE_STAT_OVERRIDES = {
+  psyshock: 'def',
+  psystrike: 'def',
+  'secret-sword': 'def',
+};
+
 // Fixed, well-documented per-hit power tables for moves whose power escalates
 // hit-to-hit (as opposed to uniform multi-hit moves like Dual Wingbeat, where
 // every hit is the same power).

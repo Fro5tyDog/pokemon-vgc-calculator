@@ -9,6 +9,7 @@ import {
   activePokemon,
   activeTeamBaseAttacks,
   makeActiveSlotSetter,
+  withIncomingEffects,
 } from '../utils/combatant';
 import { fetchMoveDetails, fetchAllMoveNames, fetchPokemon } from '../api/pokeApi';
 import { isAlwaysCrit } from '../utils/specialMoves';
@@ -184,23 +185,26 @@ export default function DamageCalculator() {
 
   const move1 = pokemon1 ? activeMove(pokemon1) : null;
   const bothSpeciesReady = !!(pokemon1?.species && pokemon2?.species);
-  const attackerInput1 = bothSpeciesReady && move1 ? buildAttackerInput(pokemon1, teamBaseAttacks1) : null;
+  // withIncomingEffects goes on the ATTACKER here — Intimidate lowers the
+  // opponent's Attack, which only matters once that opponent is the one
+  // attacking (a defender's own Attack stat is never read in this calc).
+  const attackerInput1 = bothSpeciesReady && move1 ? buildAttackerInput(withIncomingEffects(pokemon1, pokemon2), teamBaseAttacks1) : null;
   const result1to2 = attackerInput1 ? calculateDamage(attackerInput1, buildCombatant(pokemon2), fieldState, TYPE_CHART) : null;
 
   const move2 = pokemon2 ? activeMove(pokemon2) : null;
-  const attackerInput2 = bothSpeciesReady && move2 ? buildAttackerInput(pokemon2, teamBaseAttacks2) : null;
+  const attackerInput2 = bothSpeciesReady && move2 ? buildAttackerInput(withIncomingEffects(pokemon2, pokemon1), teamBaseAttacks2) : null;
   const result2to1 = attackerInput2 ? calculateDamage(attackerInput2, buildCombatant(pokemon1), fieldState, TYPE_CHART) : null;
 
   const summary1to2 = result1to2 ? buildSummaryLine(pokemon1, pokemon2, move1, result1to2, activeMoveSlot(pokemon1)?.isCritical) : '';
   const summary2to1 = result2to1 ? buildSummaryLine(pokemon2, pokemon1, move2, result2to1, activeMoveSlot(pokemon2)?.isCritical) : '';
 
-  const resultBoxStyle = { flex: '1 1 320px', minWidth: '280px', minHeight: '60px' };
+  const resultBoxStyle = { flex: '1 1 320px', minWidth: '280px', minHeight: '36px' };
 
   return (
-    <div style={{ padding: '20px', fontFamily: 'sans-serif' }}>
-      <h1>Pokémon Champions Damage Calculator</h1>
+    <div style={{ padding: '10px', fontFamily: 'sans-serif', fontSize: '13px' }}>
+      <h1 style={{ fontSize: '1.3em', margin: '0 0 8px 0' }}>Pokémon Champions Damage Calculator</h1>
 
-      <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', marginBottom: '10px' }}>
+      <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '6px' }}>
         <MoveSelector
           pokemon={pokemon1}
           setPokemon={setPokemon1}
@@ -223,12 +227,12 @@ export default function DamageCalculator() {
         />
       </div>
 
-      <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', marginBottom: '20px' }}>
+      <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '8px' }}>
         <div style={resultBoxStyle}>
           {result1to2 ? (
             <DamageOutput result={result1to2} summaryLine={summary1to2} />
           ) : (
-            <div style={{ padding: '4px 0', color: '#999', fontStyle: 'italic', fontSize: '14px' }}>
+            <div style={{ padding: '2px 0', color: '#999', fontStyle: 'italic', fontSize: '0.9em' }}>
               {pokemon1?.species ? `Select an active move for ${pokemon1.species.name}.` : 'Select a Pokémon above to see damage here.'}
             </div>
           )}
@@ -237,7 +241,7 @@ export default function DamageCalculator() {
           {result2to1 ? (
             <DamageOutput result={result2to1} summaryLine={summary2to1} />
           ) : (
-            <div style={{ padding: '4px 0', color: '#999', fontStyle: 'italic', fontSize: '14px' }}>
+            <div style={{ padding: '2px 0', color: '#999', fontStyle: 'italic', fontSize: '0.9em' }}>
               {pokemon2?.species ? `Select an active move for ${pokemon2.species.name}.` : 'Select a Pokémon above to see damage here.'}
             </div>
           )}
@@ -245,16 +249,16 @@ export default function DamageCalculator() {
       </div>
 
       {/* Team 1 | Field (middle) | Team 2 */}
-      <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', alignItems: 'flex-start' }}>
-        <div style={{ flex: '1 1 320px', minWidth: '300px' }}>
-          <h2>Pokémon 1</h2>
+      <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'flex-start' }}>
+        <div style={{ flex: '1 1 300px', minWidth: '280px' }}>
+          <h2 style={{ fontSize: '1em', margin: '0 0 4px 0' }}>Pokémon 1</h2>
           <TeamStrip side={side1} setSide={setSide1} />
-          <PokemonPanel pokemon={pokemon1} setPokemon={setPokemon1} />
+          <PokemonPanel pokemon={pokemon1} setPokemon={setPokemon1} opponent={pokemon2} />
         </div>
 
-        <div style={{ flex: '1 1 220px', minWidth: '220px', border: '1px solid #ccc', padding: '10px' }}>
-          <h3>Field Conditions</h3>
-          <label style={{ display: 'block', marginBottom: '10px' }}>
+        <div style={{ flex: '1 1 180px', minWidth: '180px', border: '1px solid #ccc', padding: '8px' }}>
+          <h3 style={{ fontSize: '0.95em', margin: '0 0 6px 0' }}>Field Conditions</h3>
+          <label style={{ display: 'block', marginBottom: '6px' }}>
             Weather:
             <select
               value={fieldState.weather}
@@ -268,7 +272,7 @@ export default function DamageCalculator() {
             </select>
           </label>
 
-          <label style={{ display: 'block', marginBottom: '10px' }}>
+          <label style={{ display: 'block', marginBottom: '6px' }}>
             Terrain:
             <select
               value={fieldState.terrain}
@@ -291,17 +295,17 @@ export default function DamageCalculator() {
             {' '}Doubles Format
           </label>
           {fieldState.isDoublesFormat && (
-            <div style={{ fontSize: '0.8em', color: '#666', marginTop: '6px' }}>
+            <div style={{ fontSize: '0.8em', color: '#666', marginTop: '4px' }}>
               Spread moves (e.g. Earthquake, Rock Slide) auto-detected from PokeAPI's
               move target data and reduced to 75% damage.
             </div>
           )}
         </div>
 
-        <div style={{ flex: '1 1 320px', minWidth: '300px' }}>
-          <h2>Pokémon 2</h2>
+        <div style={{ flex: '1 1 300px', minWidth: '280px' }}>
+          <h2 style={{ fontSize: '1em', margin: '0 0 4px 0' }}>Pokémon 2</h2>
           <TeamStrip side={side2} setSide={setSide2} />
-          {pokemon2 && <PokemonPanel pokemon={pokemon2} setPokemon={setPokemon2} />}
+          <PokemonPanel pokemon={pokemon2} setPokemon={setPokemon2} opponent={pokemon1} />
         </div>
       </div>
     </div>

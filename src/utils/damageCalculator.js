@@ -7,7 +7,16 @@
  * fixed-point modifiers (crit, multi-target reduction, etc.), which round
  * half up.
  */
-import { getEffectiveMovePower } from './specialMoves';
+import { getEffectiveMovePower, ATTACK_STAT_OVERRIDES, DEFENSE_STAT_OVERRIDES } from './specialMoves';
+import {
+  hasMoldBreaker,
+  isTypeImmune,
+  isPriorityBlocked,
+  isCritBlocked,
+  getDefensiveDamageMultiplier,
+  BOOSTER_ABILITIES,
+  getBoostedStatKey,
+} from './abilities';
 
 /**
  * Floor division - mimics Pokémon's integer math
@@ -100,37 +109,69 @@ export const calculateDamage = (
     return { minDamage: 0, maxDamage: 0, defenderHP: 0, rolls: [], damageRange: null, koInHits: 'N/A', koHits: null, koGuaranteed: false };
   }
 
-  // Determine which stats we need
-  const attackStatName = moveCategory === 'Physical' ? 'atk' : 'spa';
-  const defenseStatName = moveCategory === 'Physical' ? 'def' : 'spd';
+  // Determine which stats we need. Normally category-based, but a handful
+  // of moves override this: Body Press uses the user's own Defense instead
+  // of Attack; Foul Play uses the TARGET's Attack instead of the user's own;
+  // Psyshock/Psystrike/Secret Sword compare against the target's physical
+  // Defense even though they're Special moves.
+  const moveApiName = attacker.move?.apiName;
+  const attackOverride = ATTACK_STAT_OVERRIDES[moveApiName];
+  const attackStatName = attackOverride ? attackOverride.stat : (moveCategory === 'Physical' ? 'atk' : 'spa');
+  // Whose stat object to actually read the attacking stat from — still the
+  // attacker's own nature/EV/IV/stage for Body Press, but the DEFENDER's for
+  // Foul Play (item/ability damage multipliers below still apply to the real
+  // attacker regardless — only the raw stat VALUE is sourced differently).
+  const attackStatOwner = attackOverride?.owner === 'defender' ? defender : attacker;
+  const attackStatOwnerLevel = attackOverride?.owner === 'defender' ? defenderLevel : attackerLevel;
+
+  const defenseStatName = DEFENSE_STAT_OVERRIDES[moveApiName] || (moveCategory === 'Physical' ? 'def' : 'spd');
 
   // Get nature multipliers
-  const attackerNatureMult = getNatureMultiplier(attacker.natureData, attackStatName);
+  const attackerNatureMult = getNatureMultiplier(attackStatOwner.natureData, attackStatName);
   const defenderNatureMult = getNatureMultiplier(defender.natureData, defenseStatName);
 
-  // Get attacking stat (Attack or SpA)
+  // Get attacking stat
   let attackStat = calculateStat(
-    moveCategory === 'Physical' ? attacker.baseStat.atk : attacker.baseStat.spa,
-    attacker.iv?.[attackStatName] || 31,
-    attacker.ev?.[attackStatName] || 0,
-    attackerLevel,
+    attackStatOwner.baseStat[attackStatName],
+    attackStatOwner.iv?.[attackStatName] || 31,
+    attackStatOwner.ev?.[attackStatName] || 0,
+    attackStatOwnerLevel,
     attackerNatureMult
   );
 
-  // Get defending stat (Defense or SpD)
+  // Get defending stat
   let defenseStat = calculateStat(
-    moveCategory === 'Physical' ? defender.baseStat.def : defender.baseStat.spd,
+    defender.baseStat[defenseStatName],
     defender.iv?.[defenseStatName] || 31,
     defender.ev?.[defenseStatName] || 0,
     defenderLevel,
     defenderNatureMult
   );
 
+  // Protosynthesis / Quark Drive: when active, boost whichever of the
+  // Pokémon's own 5 non-HP stats is highest by 1.3x. Keyed off whichever
+  // Pokémon actually OWNS the stat being used (attackStatOwner — normally
+  // the attacker, but the defender for Foul Play) so the boost stays tied
+  // to the right Pokémon's own ability, not whoever's move it ended up in.
+  if (BOOSTER_ABILITIES.has(attackStatOwner.ability) && attackStatOwner.abilityActive) {
+    const boostedKey = getBoostedStatKey(calculateStat, attackStatOwner.baseStat, attackStatOwner.iv, attackStatOwner.ev, attackStatOwnerLevel, attackStatOwner.natureData, getNatureMultiplier);
+    if (boostedKey === attackStatName) {
+      attackStat = Math.floor(attackStat * 1.3);
+    }
+  }
+  if (BOOSTER_ABILITIES.has(defender.ability) && defender.abilityActive) {
+    const boostedKey = getBoostedStatKey(calculateStat, defender.baseStat, defender.iv, defender.ev, defenderLevel, defender.natureData, getNatureMultiplier);
+    if (boostedKey === defenseStatName) {
+      defenseStat = Math.floor(defenseStat * 1.3);
+    }
+  }
+
   // Handle stat stage changes. Critical hits ignore unfavorable stages:
   // a negative attacker offensive stage, and a positive defender
   // defensive stage, are both treated as 0 on a crit.
-  const isCritHit = !!attacker.isCritical;
-  let attackerStage = attacker.statStages?.[attackStatName] ?? 0;
+  const attackerHasMoldBreaker = hasMoldBreaker(attacker.ability);
+  const isCritHit = !!attacker.isCritical && !isCritBlocked(defender.ability, attackerHasMoldBreaker);
+  let attackerStage = attackStatOwner.statStages?.[attackStatName] ?? 0;
   let defenderStage = defender.statStages?.[defenseStatName] ?? 0;
   if (isCritHit) {
     if (attackerStage < 0) attackerStage = 0;
@@ -195,6 +236,21 @@ export const calculateDamage = (
   }
   const typeEffect = getTypeEffectiveness(moveType, defenderTypes[0], defenderTypes[1], typeChart);
 
+  // Ability-based full immunities (Water Absorb, Levitate, Wonder Guard, ...)
+  // and priority-blocking abilities (Armor Tail/Dazzling/Queenly Majesty) —
+  // both mean the move does 0 damage outright, same as a type immunity.
+  // Mold Breaker-class attackers bypass all of this.
+  const abilityBlocksMove =
+    isTypeImmune(defender.ability, moveType, typeEffect, attackerHasMoldBreaker) ||
+    isPriorityBlocked(defender.ability, attacker.move?.priority, attackerHasMoldBreaker);
+
+  // Flat damage-reduction abilities (Multiscale, Filter/Solid Rock/Prism
+  // Armor, Thick Fat, Heatproof, Dry Skin's Fire weakness) — combine
+  // multiplicatively with everything else in the per-roll loop below.
+  const defensiveAbilityMultiplier = abilityBlocksMove
+    ? 1
+    : getDefensiveDamageMultiplier(defender.ability, moveType, typeEffect, attackerHasMoldBreaker);
+
   // Compute all 16 discrete damage rolls (random 85%-100%, applied first,
   // then STAB -> type -> item -> ability, each floored in sequence —
   // matching in-game modifier order rather than a min/max shortcut).
@@ -204,46 +260,49 @@ export const calculateDamage = (
   // floor(b) <= floor(a+b) in general, so a single combined pass over-
   // estimates total damage for hits with different power, e.g. Triple Axel).
   const rolls = new Array(16).fill(0);
-  for (const hitPower of perHitPowers) {
-    // Core formula: ((2 * Level / 5 + 2) * Power * A/D / 50 + 2) — no
-    // crit term here (Gen 6+); the crit multiplier is applied below instead.
-    const levelFactor = floorDivide(2 * attackerLevel, 5);
-    const baseCalc = floorDivide(
-      floorDivide((levelFactor + 2) * hitPower * attackStat, defenseStat),
-      50
-    );
-    let preRollDamage = baseCalc + 2;
+  if (!abilityBlocksMove) {
+    for (const hitPower of perHitPowers) {
+      // Core formula: ((2 * Level / 5 + 2) * Power * A/D / 50 + 2) — no
+      // crit term here (Gen 6+); the crit multiplier is applied below instead.
+      const levelFactor = floorDivide(2 * attackerLevel, 5);
+      const baseCalc = floorDivide(
+        floorDivide((levelFactor + 2) * hitPower * attackStat, defenseStat),
+        50
+      );
+      let preRollDamage = baseCalc + 2;
 
-    // Field-wide modifiers that apply BEFORE the random roll — same for
-    // every hit of the same move within one turn
-    if (fieldState.isDoublesFormat && attacker.move?.targetsMultiple) {
-      // Real multi-target reduction is 3072/4096 (=0.75), round-half-up —
-      // NOT a plain floor(x * 0.75), which under-rounds by 1 in many cases
-      preRollDamage = roundDivide4096(preRollDamage, 3072);
-    }
-    preRollDamage = applyWeatherModifier(preRollDamage, moveType, fieldState.weather);
-    if (isCritHit) {
-      // Gen 6+ critical hit: flat 1.5x — plain floor, NOT the round-half-up
-      // convention used by the multi-target reduction above. Verified against
-      // a real matchup: floor(81*1.5)=121 matches the reference exactly,
-      // while round-half-up(81, 6144/4096)=122 does not.
-      preRollDamage = Math.floor(preRollDamage * 1.5);
-    }
-    preRollDamage = applyTerrainModifier(preRollDamage, moveType, fieldState.terrain, attacker.types);
-    preRollDamage = applyRuinModifier(preRollDamage, defender.ability);
-    preRollDamage = Math.max(1, Math.floor(preRollDamage));
+      // Field-wide modifiers that apply BEFORE the random roll — same for
+      // every hit of the same move within one turn
+      if (fieldState.isDoublesFormat && attacker.move?.targetsMultiple) {
+        // Real multi-target reduction is 3072/4096 (=0.75), round-half-up —
+        // NOT a plain floor(x * 0.75), which under-rounds by 1 in many cases
+        preRollDamage = roundDivide4096(preRollDamage, 3072);
+      }
+      preRollDamage = applyWeatherModifier(preRollDamage, moveType, fieldState.weather);
+      if (isCritHit) {
+        // Gen 6+ critical hit: flat 1.5x — plain floor, NOT the round-half-up
+        // convention used by the multi-target reduction above. Verified against
+        // a real matchup: floor(81*1.5)=121 matches the reference exactly,
+        // while round-half-up(81, 6144/4096)=122 does not.
+        preRollDamage = Math.floor(preRollDamage * 1.5);
+      }
+      preRollDamage = applyTerrainModifier(preRollDamage, moveType, fieldState.terrain, attacker.types);
+      preRollDamage = applyRuinModifier(preRollDamage, defender.ability);
+      preRollDamage = Math.max(1, Math.floor(preRollDamage));
 
-    for (let i = 0; i < 16; i++) {
-      const rollPercent = 85 + i;
-      let d = floorDivide(preRollDamage * rollPercent, 100);
-      d = Math.floor(d * stabMultiplier);
-      d = Math.floor(d * typeEffect);
-      d = applyItemModifier(d, attacker.item, moveCategory);
-      d = applyAbilityModifier(d, attacker.ability, moveType);
-      // The "at least 1 damage" floor should NOT apply to true immunities —
-      // typeEffect === 0 means 0 damage, full stop, not 1.
-      d = typeEffect === 0 ? 0 : Math.max(1, Math.floor(d));
-      rolls[i] += d;
+      for (let i = 0; i < 16; i++) {
+        const rollPercent = 85 + i;
+        let d = floorDivide(preRollDamage * rollPercent, 100);
+        d = Math.floor(d * stabMultiplier);
+        d = Math.floor(d * typeEffect);
+        d = applyItemModifier(d, attacker.item, moveCategory);
+        d = applyAbilityModifier(d, attacker.ability, moveType);
+        d = Math.floor(d * defensiveAbilityMultiplier);
+        // The "at least 1 damage" floor should NOT apply to true immunities —
+        // typeEffect === 0 means 0 damage, full stop, not 1.
+        d = typeEffect === 0 ? 0 : Math.max(1, Math.floor(d));
+        rolls[i] += d;
+      }
     }
   }
 
@@ -260,12 +319,15 @@ export const calculateDamage = (
     true
   );
 
-  // Calculate min and max as % of defender HP
+  // Calculate min and max as % of defender HP — floored to 1 decimal, not
+  // rounded (toFixed rounds to nearest, so 93.96% would wrongly show as
+  // 94.0%; other calculators truncate, so we match that: 93.9%)
+  const floorPercent = (value) => (Math.floor(value * 10) / 10).toFixed(1);
   const damageRange = {
     min: minDamage,
     max: maxDamage,
-    minPercent: ((minDamage / defenderHP) * 100).toFixed(1),
-    maxPercent: ((maxDamage / defenderHP) * 100).toFixed(1),
+    minPercent: floorPercent((minDamage / defenderHP) * 100),
+    maxPercent: floorPercent((maxDamage / defenderHP) * 100),
   };
 
   // Determine KO description: "guaranteed" if even the worst roll KOs in
