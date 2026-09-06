@@ -1,5 +1,6 @@
 {
   "name": "pokemon-vgc-calculator",
+  "homepage": "https://fro5tydog.github.io/pokemon-vgc-calculator",
   "version": "0.1.0",
   "description": "Open-source competitive Pokémon VGC/Champions damage calculator",
   "private": true,
@@ -12,7 +13,9 @@
     "start": "react-scripts start",
     "build": "react-scripts build",
     "test": "react-scripts test",
-    "eject": "react-scripts eject"
+    "eject": "react-scripts eject",
+    "predeploy": "npm run build",
+    "deploy": "gh-pages -d build"
   },
   "eslintConfig": {
     "extends": [
@@ -30,5 +33,8 @@
       "last 1 firefox version",
       "last 1 safari version"
     ]
+  },
+  "devDependencies": {
+    "gh-pages": "^6.3.0"
   }
 }
