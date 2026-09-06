@@ -21,6 +21,25 @@
 export const MOLD_BREAKER_ABILITIES = new Set(['Mold Breaker', 'Teravolt', 'Turboblaze']);
 export const hasMoldBreaker = (ability) => MOLD_BREAKER_ABILITIES.has(ability);
 
+/**
+ * Tough Claws: 1.3x on contact moves. PokeAPI doesn't reliably expose a
+ * "makes contact" flag, so this is a curated exception list of well-known
+ * non-contact Physical moves — everything else Physical is assumed to make
+ * contact (the common case), Special/Status moves never do. Approximate,
+ * same honesty caveat as Beat Up's team-data limitation elsewhere.
+ */
+const NON_CONTACT_PHYSICAL_MOVES = new Set([
+  'earthquake', 'magnitude', 'bulldoze', 'rock-slide', 'rock-throw', 'rock-blast',
+  'bone-club', 'bone-rush', 'bonemerang', 'icicle-spear', 'bullet-seed', 'pin-missile',
+  'spike-cannon', 'egg-bomb', 'barrage', 'rock-wrecker', 'gyro-ball', 'electro-ball',
+]);
+export function getToughClawsMultiplier(ability, moveCategory, moveApiName) {
+  if (ability !== 'Tough Claws') return 1;
+  if (moveCategory !== 'Physical') return 1;
+  if (NON_CONTACT_PHYSICAL_MOVES.has(moveApiName)) return 1;
+  return 1.3;
+}
+
 // Absorbs a specific type entirely (0 damage) — some also heal/boost a stat
 // in-game, but for damage-calc purposes the relevant effect is the immunity.
 const TYPE_ABSORB_ABILITIES = {

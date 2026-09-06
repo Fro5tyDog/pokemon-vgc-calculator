@@ -12,7 +12,7 @@ import {
   withIncomingEffects,
 } from '../utils/combatant';
 import { fetchMoveDetails, fetchAllMoveNames, fetchPokemon } from '../api/pokeApi';
-import { isAlwaysCrit } from '../utils/specialMoves';
+import { isAlwaysCrit, needsWeightData, needsSpeedData, needsFaintedAllyCount, isBeatUp } from '../utils/specialMoves';
 import PokemonPanel from './PokemonPanel';
 import MoveSelector from './MoveSelector';
 import DamageOutput from './DamageOutput';
@@ -40,10 +40,24 @@ const buildSummaryLine = (attackerP, defenderP, move, result, isCritical) => {
   }
   const atkStat = move.category === 'Physical' ? 'atk' : 'spa';
   const defStat = move.category === 'Physical' ? 'def' : 'spd';
-  const { minDamage, maxDamage, damageRange, koInHits } = result;
+  const { minDamage, maxDamage, damageRange, koInHits, screenLabel, terrainLabel, effectivePower } = result;
+
+  // "-1" style prefix when the attacker's effective stage for the relevant
+  // stat isn't neutral (own manual stage + any incoming Intimidate, same
+  // effective value the stats table shows).
+  const atkStage = attackerP.statStages?.[atkStat] ?? 0;
+  const stagePrefix = atkStage > 0 ? `+${atkStage} ` : atkStage < 0 ? `${atkStage} ` : '';
+
+  // "(80 BP)" annotation only for moves whose power isn't a fixed number —
+  // otherwise it's just clutter for ordinary moves.
+  const isVariablePower = needsWeightData(move.apiName) || needsSpeedData(move.apiName) || needsFaintedAllyCount(move.apiName) || isBeatUp(move.apiName);
+  const powerAnnotation = isVariablePower ? ` (${effectivePower} BP)` : '';
+
+  const screenSuffix = screenLabel ? ` through ${screenLabel}` : terrainLabel ? ` in ${terrainLabel}` : '';
+
   return (
-    `${formatSpread(attackerP, atkStat)} ${attackerP.species.name} ${move.name} vs. ` +
-    `${formatSpread(defenderP, 'hp')} / ${formatSpread(defenderP, defStat)} ${defenderP.species.name}` +
+    `${stagePrefix}${formatSpread(attackerP, atkStat)} ${attackerP.species.name} ${move.name}${powerAnnotation} vs. ` +
+    `${formatSpread(defenderP, 'hp')} / ${formatSpread(defenderP, defStat)} ${defenderP.species.name}${screenSuffix}` +
     `${critSuffix}: ${minDamage}-${maxDamage} (${damageRange.minPercent}% - ${damageRange.maxPercent}%) -- ${koInHits}`
   );
 };
@@ -213,8 +227,8 @@ export default function DamageCalculator() {
     ? calculateDamage(attackerInput2, { ...buildCombatant(withIncomingEffects(pokemon1, pokemon2)), fieldEffects: fieldState.side1 }, fieldState, TYPE_CHART)
     : null;
 
-  const summary1to2 = result1to2 ? buildSummaryLine(pokemon1, pokemon2, move1, result1to2, activeMoveSlot(pokemon1)?.isCritical) : '';
-  const summary2to1 = result2to1 ? buildSummaryLine(pokemon2, pokemon1, move2, result2to1, activeMoveSlot(pokemon2)?.isCritical) : '';
+  const summary1to2 = result1to2 ? buildSummaryLine(withIncomingEffects(pokemon1, pokemon2), pokemon2, move1, result1to2, activeMoveSlot(pokemon1)?.isCritical) : '';
+  const summary2to1 = result2to1 ? buildSummaryLine(withIncomingEffects(pokemon2, pokemon1), pokemon1, move2, result2to1, activeMoveSlot(pokemon2)?.isCritical) : '';
 
   const resultBoxStyle = { flex: '1 1 320px', minWidth: '280px', minHeight: '36px' };
 
@@ -275,7 +289,7 @@ export default function DamageCalculator() {
         <div style={{ flex: '1 1 300px', minWidth: '280px' }}>
           <h2 style={{ fontSize: '1em', margin: '0 0 4px 0' }}>Pokémon 1</h2>
           <TeamStrip side={side1} setSide={setSide1} />
-          <PokemonPanel pokemon={pokemon1} setPokemon={setPokemon1} opponent={pokemon2} />
+          <PokemonPanel pokemon={pokemon1} setPokemon={setPokemon1} opponent={pokemon2} speedMultiplier={fieldState.side1.tailwind ? 2 : 1} />
           <ImportPanel setSide={setSide1} allMoves={allMoves} />
         </div>
 
@@ -291,7 +305,7 @@ export default function DamageCalculator() {
               <option>Harsh Sunlight</option>
               <option>Rain</option>
               <option>Sandstorm</option>
-              <option>Hail</option>
+              <option>Snow</option>
               <option>Desolate Land</option>
               <option>Primordial Sea</option>
               <option>Delta Stream</option>
@@ -366,8 +380,14 @@ export default function DamageCalculator() {
                 <label style={{ display: 'block', fontSize: '0.85em' }}>
                   <input type="checkbox" checked={side.auroraVeil} onChange={(e) => update('auroraVeil', e.target.checked)} /> Aurora Veil
                 </label>
-                <label style={{ display: 'block', fontSize: '0.85em' }}>
-                  <input type="checkbox" checked={side.helpingHand} onChange={(e) => update('helpingHand', e.target.checked)} /> Helping Hand
+                <label style={{ display: 'block', fontSize: '0.85em' }} title={!fieldState.isDoublesFormat ? 'Helping Hand needs an ally — only applies in Doubles Format' : undefined}>
+                  <input
+                    type="checkbox"
+                    checked={side.helpingHand}
+                    disabled={!fieldState.isDoublesFormat}
+                    onChange={(e) => update('helpingHand', e.target.checked)}
+                  />
+                  {' '}Helping Hand{!fieldState.isDoublesFormat ? ' (Doubles only)' : ''}
                 </label>
                 <label style={{ display: 'block', fontSize: '0.85em' }}>
                   <input type="checkbox" checked={side.tailwind} onChange={(e) => update('tailwind', e.target.checked)} /> Tailwind
@@ -380,7 +400,7 @@ export default function DamageCalculator() {
         <div style={{ flex: '1 1 300px', minWidth: '280px' }}>
           <h2 style={{ fontSize: '1em', margin: '0 0 4px 0' }}>Pokémon 2</h2>
           <TeamStrip side={side2} setSide={setSide2} />
-          <PokemonPanel pokemon={pokemon2} setPokemon={setPokemon2} opponent={pokemon1} />
+          <PokemonPanel pokemon={pokemon2} setPokemon={setPokemon2} opponent={pokemon1} speedMultiplier={fieldState.side2.tailwind ? 2 : 1} />
           <ImportPanel setSide={setSide2} allMoves={allMoves} />
         </div>
       </div>

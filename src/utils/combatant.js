@@ -44,15 +44,32 @@ export const activeMoveSlot = (pokemon) => pokemon?.moves?.[pokemon.activeMoveIn
 /**
  * Applies effects the OPPONENT'S ability has on this Pokémon before it's
  * used as a combatant — currently just Intimidate, which lowers this
- * Pokémon's Attack stage by 1 when the opponent has it active. Returns a
- * new object; doesn't mutate. Call with (defender, attacker) — the
- * opponent's ability is what's checked.
+ * Pokémon's Attack stage by 1 when the opponent has it active, modified by
+ * how THIS Pokémon's own ability reacts to an incoming stat drop:
+ *  - Defiant: the drop still happens, but also grants +2 Attack in
+ *    response — net effect is +1 Attack overall from an Intimidate.
+ *  - Competitive: the Attack drop happens normally, but ALSO grants +2
+ *    Sp. Atk in response (a different stat, so both changes apply).
+ *  - Contrary: inverts the drop into a +1 Attack gain instead.
+ * Returns a new object; doesn't mutate. Call with (defender, attacker) —
+ * the opponent's ability is what's checked.
  */
 export const withIncomingEffects = (pokemon, opponent) => {
   if (!pokemon) return pokemon;
   if (opponent?.ability === 'Intimidate' && opponent?.abilityActive) {
-    const newAtkStage = Math.max(-6, (pokemon.statStages?.atk ?? 0) - 1);
-    return { ...pokemon, statStages: { ...pokemon.statStages, atk: newAtkStage } };
+    const newStages = { ...pokemon.statStages };
+    if (pokemon.ability === 'Contrary') {
+      newStages.atk = Math.min(6, (pokemon.statStages?.atk ?? 0) + 1);
+    } else {
+      newStages.atk = Math.max(-6, (pokemon.statStages?.atk ?? 0) - 1);
+      if (pokemon.ability === 'Defiant') {
+        newStages.atk = Math.min(6, newStages.atk + 2);
+      }
+      if (pokemon.ability === 'Competitive') {
+        newStages.spa = Math.min(6, (pokemon.statStages?.spa ?? 0) + 2);
+      }
+    }
+    return { ...pokemon, statStages: newStages };
   }
   return pokemon;
 };

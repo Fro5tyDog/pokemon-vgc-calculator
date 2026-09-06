@@ -3,7 +3,7 @@ import { NATURES, ITEMS } from '../data/gameData';
 import { calculateStat, applyStatStage } from '../utils/damageCalculator';
 import { TOGGLEABLE_ABILITIES, INTIMIDATE } from '../utils/abilities';
 import { MEGA_FORMS } from '../data/megaForms';
-import { getEffectiveSpecies } from '../utils/combatant';
+import { getEffectiveSpecies, withIncomingEffects } from '../utils/combatant';
 import { fetchPokemon } from '../api/pokeApi';
 import SearchableSelect from './SearchableSelect';
 
@@ -25,11 +25,12 @@ const megaLabel = (slug) =>
  * Compute the actual in-battle value of one stat from base/IV/EV/nature/stage,
  * for the live Base -> Actual Stat display.
  */
-const computeActualStat = (stat, baseValue, sp, natureData, stage) => {
+const computeActualStat = (stat, baseValue, sp, natureData, stage, speedMultiplier = 1) => {
   const isHP = stat === 'hp';
   const natureMultiplier = isHP ? 1.0 : (natureData?.[stat] || 1.0);
   const raw = calculateStat(baseValue, FIXED_IV, sp * 8, FIXED_LEVEL, natureMultiplier, isHP);
-  return isHP ? raw : applyStatStage(raw, stage || 0);
+  const staged = isHP ? raw : applyStatStage(raw, stage || 0);
+  return stat === 'spe' ? Math.floor(staged * speedMultiplier) : staged;
 };
 
 // Species selection now happens via TeamStrip (the 6-box team roster above
@@ -38,8 +39,19 @@ const computeActualStat = (stat, baseValue, sp, natureData, stage) => {
 // `opponent` is used only to reflect their Intimidate (if active) into this
 // Pokémon's displayed Attack stage — the underlying stored stage stays the
 // user's own manual value; only the DISPLAY (and the calc) folds it in.
-export default function PokemonPanel({ pokemon, setPokemon, opponent }) {
-  const incomingAtkAdjustment = opponent?.ability === 'Intimidate' && opponent?.abilityActive ? -1 : 0;
+export default function PokemonPanel({ pokemon, setPokemon, opponent, speedMultiplier = 1 }) {
+  // Effective incoming adjustment per stat — computed via the SAME
+  // withIncomingEffects logic the actual damage calc uses, so Defiant
+  // (net +1 Atk from an Intimidate), Competitive (-1 Atk but +2 SpA), and
+  // Contrary (inverts the drop into +1 Atk) all display correctly instead
+  // of the table just assuming a flat "-1 Atk" for every ability.
+  const adjustedPokemon = pokemon ? withIncomingEffects(pokemon, opponent) : pokemon;
+  const incomingAdjustments = pokemon
+    ? {
+        atk: (adjustedPokemon.statStages?.atk ?? 0) - (pokemon.statStages?.atk ?? 0),
+        spa: (adjustedPokemon.statStages?.spa ?? 0) - (pokemon.statStages?.spa ?? 0),
+      }
+    : {};
   const megaOptions = pokemon?.speciesSlug ? MEGA_FORMS[pokemon.speciesSlug] || [] : [];
 
   // Fetch the Mega form's own species data (stats/types/abilities) whenever
@@ -85,7 +97,7 @@ export default function PokemonPanel({ pokemon, setPokemon, opponent }) {
   // portion, so toggling Intimidate off later doesn't lose what the user
   // actually set.
   const handleStatStageChange = (stat, value) => {
-    const incomingAdjustment = stat === 'atk' ? incomingAtkAdjustment : 0;
+    const incomingAdjustment = incomingAdjustments[stat] || 0;
     const desiredEffective = Math.min(6, Math.max(-6, parseInt(value) || 0));
     const rawStage = desiredEffective - incomingAdjustment;
     setPokemon({ ...pokemon, statStages: { ...pokemon.statStages, [stat]: rawStage } });
@@ -244,9 +256,9 @@ export default function PokemonPanel({ pokemon, setPokemon, opponent }) {
                 const baseValue = effectiveSpecies?.baseStats[stat] ?? 0;
                 const natureData = pokemon.nature ? NATURES[pokemon.nature] : null;
                 const rawStage = stat === 'hp' ? 0 : (pokemon.statStages?.[stat] ?? 0);
-                const incomingAdjustment = stat === 'atk' ? incomingAtkAdjustment : 0;
+                const incomingAdjustment = incomingAdjustments[stat] || 0;
                 const stage = Math.max(-6, Math.min(6, rawStage + incomingAdjustment));
-                const actual = computeActualStat(stat, baseValue, pokemon.sp[stat], natureData, stage);
+                const actual = computeActualStat(stat, baseValue, pokemon.sp[stat], natureData, stage, speedMultiplier);
                 const natureMult = stat === 'hp' ? 1.0 : (natureData?.[stat] || 1.0);
                 return (
                   <tr key={stat} style={{ borderBottom: '1px solid #f0f0f0' }}>
@@ -270,7 +282,7 @@ export default function PokemonPanel({ pokemon, setPokemon, opponent }) {
                         <input
                           type="number"
                           value={stage}
-                          title={incomingAdjustment !== 0 ? `Includes ${incomingAdjustment} from opponent's Intimidate` : undefined}
+                          title={incomingAdjustment !== 0 ? `Includes ${incomingAdjustment > 0 ? '+' : ''}${incomingAdjustment} from an incoming effect (opponent's Intimidate, possibly reacted to by this Pokémon's own ability)` : undefined}
                           onChange={(e) => handleStatStageChange(stat, e.target.value)}
                           min="-6"
                           max="6"

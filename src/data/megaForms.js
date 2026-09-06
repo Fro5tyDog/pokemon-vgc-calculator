@@ -41,7 +41,7 @@ export const MEGA_FORMS = {
   camerupt: ['camerupt-mega'],
   altaria: ['altaria-mega'],
   banette: ['banette-mega'],
-  absol: ['absol-mega'],
+  absol: ['absol-mega', 'absol-mega-za-z'],
   glalie: ['glalie-mega'],
   salamence: ['salamence-mega'],
   metagross: ['metagross-mega'],
@@ -49,21 +49,57 @@ export const MEGA_FORMS = {
   latios: ['latios-mega'],
   rayquaza: ['rayquaza-mega'],
   lopunny: ['lopunny-mega'],
-  garchomp: ['garchomp-mega'],
-  lucario: ['lucario-mega'],
+  garchomp: ['garchomp-mega', 'garchomp-mega-za-z'],
+  lucario: ['lucario-mega', 'lucario-mega-za-z'],
   abomasnow: ['abomasnow-mega'],
   gallade: ['gallade-mega'],
   audino: ['audino-mega'],
   diancie: ['diancie-mega'],
-  // Legends: Z-A new Mega — verified stats (see customSpecies.js). The other
-  // ~25 new Z-A Megas (Victreebel, Clefable, Starmie, Meganium, Feraligatr,
-  // Skarmory, Froslass, Emboar, Excadrill, Scrafty, Scolipede, Eelektross,
-  // Chandelure, Chesnaught, Delphox, Greninja, Pyroar, Malamar, Barbaracle,
-  // Dragalge, Hawlucha, Zygarde, Drampa, Falinks, plus DLC additions like
-  // Chimecho/Baxcalibur/Raichu/Zeraora/Staraptor/Heatran/Darkrai/Golurk/
-  // Meowstic) aren't added here yet — I don't have verified stat spreads
-  // for them and didn't want to guess. Same process as Dragonite once
-  // real data's available: add stats to customSpecies.js, then the slug
-  // here.
+  // Legends: Z-A new Megas — verified stats/types directly from
+  // serebii.net/legendsz-a/megaevolutions.shtml (see customSpecies.js for
+  // the full data and the important caveat about abilities not being
+  // confirmed for most of these yet). Garchomp/Lucario/Absol each now
+  // have TWO mega forms — their existing Gen6 one above, plus a new
+  // "Z"-suffixed Z-A one, hence the merged arrays below.
   dragonite: ['dragonite-mega-za'],
+  raichu: ['raichu-mega-za-x', 'raichu-mega-za-y'],
+  clefable: ['clefable-mega-za'],
+  victreebel: ['victreebel-mega-za'],
+  starmie: ['starmie-mega-za'],
+  meganium: ['meganium-mega-za'],
+  feraligatr: ['feraligatr-mega-za'],
+  skarmory: ['skarmory-mega-za'],
+  chimecho: ['chimecho-mega-za'],
+  staraptor: ['staraptor-mega-za'],
+  froslass: ['froslass-mega-za'],
+  heatran: ['heatran-mega-za'],
+  darkrai: ['darkrai-mega-za'],
+  emboar: ['emboar-mega-za'],
+  excadrill: ['excadrill-mega-za'],
+  scolipede: ['scolipede-mega-za'],
+  scrafty: ['scrafty-mega-za'],
+  eelektross: ['eelektross-mega-za'],
+  chandelure: ['chandelure-mega-za'],
+  golurk: ['golurk-mega-za'],
+  chesnaught: ['chesnaught-mega-za'],
+  delphox: ['delphox-mega-za'],
+  greninja: ['greninja-mega-za'],
+  pyroar: ['pyroar-mega-za'],
+  floette: ['floette-mega-za'],
+  meowstic: ['meowstic-mega-za'],
+  malamar: ['malamar-mega-za'],
+  barbaracle: ['barbaracle-mega-za'],
+  dragalge: ['dragalge-mega-za'],
+  hawlucha: ['hawlucha-mega-za'],
+  zygarde: ['zygarde-mega-za'],
+  crabominable: ['crabominable-mega-za'],
+  golisopod: ['golisopod-mega-za'],
+  drampa: ['drampa-mega-za'],
+  magearna: ['magearna-mega-za'],
+  zeraora: ['zeraora-mega-za'],
+  falinks: ['falinks-mega-za'],
+  scovillain: ['scovillain-mega-za'],
+  glimmora: ['glimmora-mega-za'],
+  tatsugiri: ['tatsugiri-mega-za'],
+  baxcalibur: ['baxcalibur-mega-za'],
 };

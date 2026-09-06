@@ -16,6 +16,7 @@ import {
   getDefensiveDamageMultiplier,
   BOOSTER_ABILITIES,
   getBoostedStatKey,
+  getToughClawsMultiplier,
 } from './abilities';
 
 /**
@@ -102,11 +103,23 @@ export const calculateDamage = (
   // Note: no level-doubling for crits here — that was the old Gen 1-5
   // mechanic. Gen 6+ (which Champions follows) uses a flat 1.5x multiplier
   // applied as its own step later in the pipeline, not baked into this term.
-  const moveType = attacker.move?.type || 'Normal';
+  let moveType = attacker.move?.type || 'Normal';
   const moveCategory = attacker.move?.category || 'Physical'; // Physical, Special, Status
 
   if (moveCategory === 'Status') {
-    return { minDamage: 0, maxDamage: 0, defenderHP: 0, rolls: [], damageRange: null, koInHits: 'N/A', koHits: null, koGuaranteed: false };
+    return { minDamage: 0, maxDamage: 0, defenderHP: 0, rolls: [], damageRange: null, koInHits: 'N/A', koHits: null, koGuaranteed: false, screenLabel: null, terrainLabel: null, effectivePower: 0 };
+  }
+
+  // "-ate" abilities: a Normal-type move becomes the ability's associated
+  // type and gets a 1.2x power boost (Pixilate/Refrigerate/Aerilate/
+  // Galvanize). This has to happen here, early, since it changes which
+  // type STAB and the defender's type effectiveness are computed against
+  // — not just a late damage multiplier like most ability effects below.
+  const ATE_ABILITIES = { Pixilate: 'Fairy', Refrigerate: 'Ice', Aerilate: 'Flying', Galvanize: 'Electric' };
+  let ateMultiplier = 1;
+  if (moveType === 'Normal' && ATE_ABILITIES[attacker.ability]) {
+    moveType = ATE_ABILITIES[attacker.ability];
+    ateMultiplier = 1.2;
   }
 
   // Determine which stats we need. Normally category-based, but a handful
@@ -164,6 +177,17 @@ export const calculateDamage = (
     if (boostedKey === defenseStatName) {
       defenseStat = Math.floor(defenseStat * 1.3);
     }
+  }
+
+  // Sandstorm boosts Rock-types' Sp. Def by 50%; Snow boosts Ice-types'
+  // Def by 50% (Snow is Gen 9's replacement for Hail — same slot, new
+  // name and this added effect). Both apply directly to the raw stat,
+  // same point in the pipeline as the Booster Energy boost above.
+  if (fieldState.weather === 'Sandstorm' && defenseStatName === 'spd' && defender.types?.includes('Rock')) {
+    defenseStat = Math.floor(defenseStat * 1.5);
+  }
+  if (fieldState.weather === 'Snow' && defenseStatName === 'def' && defender.types?.includes('Ice')) {
+    defenseStat = Math.floor(defenseStat * 1.5);
   }
 
   // Handle stat stage changes. Critical hits ignore unfavorable stages:
@@ -258,17 +282,24 @@ export const calculateDamage = (
   const attackerGrounded = isGrounded(attacker, fieldState.gravity);
   const defenderGrounded = isGrounded(defender, fieldState.gravity);
 
+  // Effective move priority — accounts for Grassy Glide's conditional +1
+  // while Grassy Terrain is up, which PokeAPI's static priority field
+  // can't capture on its own.
+  const effectivePriority = getEffectiveMovePriority(attacker.move?.apiName, attacker.move?.priority, fieldState.terrain);
+
   // Ability-based full immunities (Water Absorb, Levitate, Wonder Guard, ...),
-  // priority-blocking abilities (Armor Tail/Dazzling/Queenly Majesty), and
+  // priority-blocking abilities (Armor Tail/Dazzling/Queenly Majesty),
+  // Psychic Terrain's separate priority block for grounded targets, and
   // extreme-weather move-type nullification (Desolate Land blocks Water,
   // Primordial Sea blocks Fire) — all mean the move does 0 damage outright.
   // Mold Breaker-class attackers bypass the ability-based ones (not the
-  // weather one — that's not an ability effect).
+  // terrain or weather ones — those aren't ability effects).
   const abilityBlocksMove =
     isTypeImmune(defender.ability, moveType, typeEffect, attackerHasMoldBreaker, fieldState.gravity) ||
-    isPriorityBlocked(defender.ability, attacker.move?.priority, attackerHasMoldBreaker);
+    isPriorityBlocked(defender.ability, effectivePriority, attackerHasMoldBreaker);
+  const terrainBlocksMove = isPsychicTerrainBlocked(fieldState.terrain, defenderGrounded, effectivePriority);
   const weatherBlocksMove = isWeatherBlocked(fieldState.weather, moveType);
-  const moveBlocked = abilityBlocksMove || weatherBlocksMove;
+  const moveBlocked = abilityBlocksMove || terrainBlocksMove || weatherBlocksMove;
 
   // Flat damage-reduction abilities (Multiscale, Filter/Solid Rock/Prism
   // Armor, Thick Fat, Heatproof, Dry Skin's Fire weakness) — combine
@@ -280,8 +311,18 @@ export const calculateDamage = (
   // Screens (Light Screen/Reflect/Aurora Veil) protecting the defender's
   // side, and Helping Hand boosting the attacker's side — both per-side
   // field conditions carried on each Pokémon's own fieldEffects.
-  const screenMultiplier = getScreenMultiplier(defender.fieldEffects, moveCategory, fieldState.isDoublesFormat, attacker.move?.targetsMultiple);
-  const helpingHandMultiplier = getHelpingHandMultiplier(attacker.fieldEffects);
+  const screenMultiplier = getScreenMultiplier(defender.fieldEffects, moveCategory, fieldState.isDoublesFormat);
+  const helpingHandMultiplier = getHelpingHandMultiplier(attacker.fieldEffects, fieldState.isDoublesFormat);
+
+  // Which screen (if any) actually reduced this hit — for a "through
+  // Reflect" style label on the summary line. Aurora Veil covers both
+  // categories, so it takes display precedence when both happen to be up.
+  let screenLabel = null;
+  if (screenMultiplier < 1) {
+    if (defender.fieldEffects?.auroraVeil) screenLabel = 'Aurora Veil';
+    else if (moveCategory === 'Special' && defender.fieldEffects?.lightScreen) screenLabel = 'Light Screen';
+    else if (moveCategory === 'Physical' && defender.fieldEffects?.reflect) screenLabel = 'Reflect';
+  }
 
   // Compute all 16 discrete damage rolls (random 85%-100%, applied first,
   // then STAB -> type -> item -> ability, each floored in sequence —
@@ -292,8 +333,35 @@ export const calculateDamage = (
   // floor(b) <= floor(a+b) in general, so a single combined pass over-
   // estimates total damage for hits with different power, e.g. Triple Axel).
   const rolls = new Array(16).fill(0);
+  let terrainLabel = null;
   if (!moveBlocked) {
-    for (const hitPower of perHitPowers) {
+    for (const rawHitPower of perHitPowers) {
+      // Power-level ability/terrain boosts (Tough Claws, Pixilate/
+      // Refrigerate/Aerilate/Galvanize, Grassy/Electric/Psychic Terrain's
+      // 1.3x, Grassy Terrain's Earthquake/Bulldoze/Magnitude halving, Misty
+      // Terrain's Dragon halving) all apply to the move's POWER before the
+      // formula runs — NOT as a multiplier on the computed damage. Verified
+      // against several real matchups (Tough Claws, Pixilate, Electric
+      // Terrain, Misty Terrain all independently confirmed): boosting/
+      // reducing power first and running it through the full nested-floor
+      // formula gives a different (correct) result than applying the same
+      // multiplier before or after the formula runs.
+      let hitPower = rawHitPower;
+      if (ateMultiplier !== 1) hitPower = Math.floor(hitPower * ateMultiplier);
+      const toughClawsMult = getToughClawsMultiplier(attacker.ability, moveCategory, attacker.move?.apiName);
+      if (toughClawsMult !== 1) hitPower = Math.floor(hitPower * toughClawsMult);
+      if (attackerGrounded) {
+        const terrainResult = getTerrainPowerMultiplier(moveType, fieldState.terrain, attacker.move?.apiName);
+        if (terrainResult.multiplier !== 1) {
+          hitPower = Math.floor(hitPower * terrainResult.multiplier);
+          if (terrainResult.multiplier > 1) terrainLabel = fieldState.terrain;
+        }
+      }
+      if (defenderGrounded && fieldState.terrain === 'Misty Terrain' && moveType === 'Dragon' && attackerGrounded) {
+        hitPower = Math.floor(hitPower * 0.5);
+        terrainLabel = 'Misty Terrain';
+      }
+
       // Core formula: ((2 * Level / 5 + 2) * Power * A/D / 50 + 2) — no
       // crit term here (Gen 6+); the crit multiplier is applied below instead.
       const levelFactor = floorDivide(2 * attackerLevel, 5);
@@ -318,10 +386,15 @@ export const calculateDamage = (
         // while round-half-up(81, 6144/4096)=122 does not.
         preRollDamage = Math.floor(preRollDamage * 1.5);
       }
-      if (attackerGrounded) {
-        preRollDamage = applyTerrainModifier(preRollDamage, moveType, fieldState.terrain);
-      }
       preRollDamage = applyRuinModifier(preRollDamage, defender.ability);
+      // Helping Hand applies here too — same early position as the
+      // multi-target reduction, BEFORE the random roll. Verified against a
+      // real matchup: applying it here (not as a late multiplier after
+      // type effectiveness, which is what the previous version did) is
+      // what actually reproduces the reference numbers exactly.
+      if (helpingHandMultiplier !== 1) {
+        preRollDamage = Math.floor(preRollDamage * helpingHandMultiplier);
+      }
       preRollDamage = Math.max(1, Math.floor(preRollDamage));
 
       for (let i = 0; i < 16; i++) {
@@ -329,14 +402,10 @@ export const calculateDamage = (
         let d = floorDivide(preRollDamage * rollPercent, 100);
         d = Math.floor(d * stabMultiplier);
         d = Math.floor(d * typeEffect);
-        if (defenderGrounded) {
-          d = applyMistyTerrainModifier(d, moveType, fieldState.terrain);
-        }
         d = applyItemModifier(d, attacker.item, moveCategory);
         d = applyAbilityModifier(d, attacker.ability, moveType);
         d = Math.floor(d * defensiveAbilityMultiplier);
         d = Math.floor(d * screenMultiplier);
-        d = Math.floor(d * helpingHandMultiplier);
         // The "at least 1 damage" floor should NOT apply to true immunities —
         // typeEffect === 0 means 0 damage, full stop, not 1.
         d = typeEffect === 0 ? 0 : Math.max(1, Math.floor(d));
@@ -394,6 +463,9 @@ export const calculateDamage = (
     koInHits,
     koHits,
     koGuaranteed,
+    screenLabel,
+    terrainLabel,
+    effectivePower: perHitPowers[0],
   };
 };
 
@@ -452,7 +524,7 @@ const applyWeatherModifier = (damage, moveType, weather) => {
     'Desolate Land': moveType === 'Fire' ? 1.5 : 1, // Water's 0.5x doesn't apply — it fails outright instead
     'Primordial Sea': moveType === 'Water' ? 1.5 : 1, // Fire's 0.5x doesn't apply — it fails outright instead
     'Sandstorm': 1, // Affects Special Defense, not damage
-    'Hail': 1,
+    'Snow': 1, // Gen 9's replacement for Hail — no direct damage multiplier itself (its Ice-Def boost is applied to the stat directly, not here)
   };
   return Math.floor(damage * (weatherMult[weather] || 1));
 };
@@ -512,52 +584,89 @@ const getGravityAdjustedTypeEffect = (moveType, defenderTypes, typeChart, gravit
 };
 
 /**
- * Apply terrain modifiers — only affects GROUNDED Pokémon (checked by the
- * caller before calling this, via isGrounded). Grassy/Electric/Psychic
- * Terrain boost the attacker's matching-type moves; Misty Terrain instead
- * halves Dragon-type damage taken by a grounded defender (handled by a
- * separate function below since it's defender-side, not attacker-side).
+ * Terrain's power-level modifiers — applied to the move's POWER before the
+ * damage formula runs, not as a multiplier on damage (verified against
+ * real matchups: this is what actually reproduces reference numbers
+ * exactly for both Electric and Misty Terrain — same class of fix as
+ * Tough Claws/Pixilate). Only affects GROUNDED Pokémon (checked by the
+ * caller). Grassy/Electric/Psychic Terrain boost matching-type moves by
+ * 30% (confirmed via Serebii: this was 50% before Gen 8). Grassy Terrain
+ * also specifically halves Earthquake/Bulldoze/Magnitude. Misty Terrain's
+ * Dragon-halving is handled separately by the caller since it needs both
+ * the attacker AND defender grounded, not just the attacker.
  */
-const applyTerrainModifier = (damage, moveType, terrain) => {
-  const terrainMult = {
-    'Grassy Terrain': moveType === 'Grass' ? 1.5 : 1,
-    'Electric Terrain': moveType === 'Electric' ? 1.5 : 1,
-    'Psychic Terrain': moveType === 'Psychic' ? 1.5 : 1,
-  };
-  return Math.floor(damage * (terrainMult[terrain] || 1));
-};
+const GRASSY_TERRAIN_WEAKENED_MOVES = new Set(['earthquake', 'bulldoze', 'magnitude']);
 
-/** Misty Terrain halves Dragon-type damage against a grounded defender. */
-const applyMistyTerrainModifier = (damage, moveType, terrain) => {
-  if (terrain === 'Misty Terrain' && moveType === 'Dragon') {
-    return Math.floor(damage * 0.5);
+const getTerrainPowerMultiplier = (moveType, terrain, moveApiName) => {
+  const terrainMult = {
+    'Grassy Terrain': moveType === 'Grass' ? 1.3 : 1,
+    'Electric Terrain': moveType === 'Electric' ? 1.3 : 1,
+    'Psychic Terrain': moveType === 'Psychic' ? 1.3 : 1,
+  };
+  let multiplier = terrainMult[terrain] || 1;
+  if (terrain === 'Grassy Terrain' && GRASSY_TERRAIN_WEAKENED_MOVES.has(moveApiName)) {
+    multiplier *= 0.5;
   }
-  return damage;
+  return { multiplier };
 };
 
 /**
- * Light Screen / Reflect / Aurora Veil — halve damage of the category they
- * cover, or 2732/4096 (round-half-up, weaker reduction) instead of a flat
- * half when a spread move hits multiple targets in Doubles. Not verified
- * against a real number the way the multi-target reduction was — this is
- * the documented mechanic, but flagging the rounding specifically as
- * best-effort rather than confirmed.
+ * Grassy Glide gets +1 priority, but only conditionally — while Grassy
+ * Terrain is active. PokeAPI's static priority field can't capture that
+ * (it's not a fixed property of the move), so it's special-cased here for
+ * the priority-blocking abilities (Armor Tail/Dazzling/Queenly Majesty) to
+ * check against.
  */
-const getScreenMultiplier = (defenderFieldEffects, moveCategory, isDoublesFormat, movetargetsMultiple) => {
+const getEffectiveMovePriority = (moveApiName, basePriority, terrain) => {
+  if (moveApiName === 'grassy-glide' && terrain === 'Grassy Terrain') return 1;
+  return basePriority || 0;
+};
+
+/**
+ * Psychic Terrain blocks priority moves against a GROUNDED target — a
+ * terrain effect, distinct from (and in addition to) the ability-based
+ * priority block (Armor Tail/Dazzling/Queenly Majesty) handled elsewhere.
+ * Per Serebii: doesn't affect the user's own self-targeted moves or
+ * field-wide moves, but this app only ever computes moves aimed at the
+ * opponent, so that carve-out doesn't need separate handling here.
+ */
+const isPsychicTerrainBlocked = (terrain, defenderGrounded, effectivePriority) =>
+  terrain === 'Psychic Terrain' && defenderGrounded && effectivePriority > 0;
+
+/**
+ * Light Screen / Reflect / Aurora Veil — halve damage of the category they
+ * cover in Singles. In Doubles/Triples, screens are unconditionally weaker
+ * (2732/4096 ≈ 0.667x) regardless of whether the move hitting them targets
+ * one Pokémon or several — this is a battle-FORMAT effect, not tied to the
+ * move's own targeting the way the separate multi-target damage reduction
+ * is. Verified against a real matchup: a single-target move (Kowtow
+ * Cleave) in a Doubles-format calc matched the reference exactly with this
+ * unconditional-on-format fraction — the "only if movetargetsMultiple"
+ * version from before was the bug.
+ */
+const getScreenMultiplier = (defenderFieldEffects, moveCategory, isDoublesFormat) => {
   if (!defenderFieldEffects) return 1;
   const covered =
     defenderFieldEffects.auroraVeil ||
     (moveCategory === 'Special' && defenderFieldEffects.lightScreen) ||
     (moveCategory === 'Physical' && defenderFieldEffects.reflect);
   if (!covered) return 1;
-  if (isDoublesFormat && movetargetsMultiple) {
-    return 2732 / 4096; // ~0.667x — weaker reduction for a spread move hitting multiple targets in Doubles
+  if (isDoublesFormat) {
+    return 2732 / 4096; // ~0.667x — weaker reduction in any Doubles/Triples battle
   }
   return 0.5;
 };
 
-/** Helping Hand: flat 1.5x on the receiving attacker's damage. */
-const getHelpingHandMultiplier = (attackerFieldEffects) => (attackerFieldEffects?.helpingHand ? 1.5 : 1);
+/**
+ * Helping Hand: flat 1.5x on the receiving attacker's damage. Only a legal
+ * mechanic in Doubles/Triples (it requires an ally to use it on you) — if
+ * left on while a calc is set to Singles, it'd add a boost that couldn't
+ * actually happen in that format, which is likely what "boosts by too
+ * much" was catching: the toggle applied unconditionally regardless of
+ * format instead of being gated to Doubles like the real move is.
+ */
+const getHelpingHandMultiplier = (attackerFieldEffects, isDoublesFormat) =>
+  attackerFieldEffects?.helpingHand && isDoublesFormat ? 1.5 : 1;
 
 /**
  * Apply Ruin ability modifiers

@@ -42,7 +42,10 @@ export const WEATHER_CONDITIONS = [
   'Harsh Sunlight',
   'Rain',
   'Sandstorm',
-  'Hail',
+  'Snow',
+  'Desolate Land',
+  'Primordial Sea',
+  'Delta Stream',
 ];
 
 export const TERRAIN_CONDITIONS = [

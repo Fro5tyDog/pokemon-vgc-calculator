@@ -22,6 +22,19 @@ export const slugify = (name) =>
     .replace(/\s+/g, '-')
     .replace(/[^a-z0-9-]/g, '');
 
+/**
+ * Species where gender is an actual FORM difference (different stats/
+ * ability), not just cosmetic — PokeAPI models these as separate "-male"/
+ * "-female" varieties. Showdown text marks the female form with a "-F"
+ * suffix directly on the species name (e.g. "Indeedee-F"); an unlabelled
+ * name defaults to male, which is also PokeAPI's own default variety for
+ * these species so no special-casing is needed for that direction.
+ */
+const GENDERED_FORM_SLUG_SUFFIX = /-f$/;
+
+/** "indeedee-f" -> "indeedee-female" (PokeAPI's actual variety slug). */
+const resolveGenderedSlug = (slug) => (GENDERED_FORM_SLUG_SUFFIX.test(slug) ? slug.replace(GENDERED_FORM_SLUG_SUFFIX, '-female') : slug);
+
 /** Splits a full pasted team into per-Pokémon blocks and parses each. */
 export function parseShowdownTeam(text) {
   const blocks = text
@@ -56,7 +69,7 @@ function parseShowdownPokemon(block) {
   }
 
   const spec = {
-    speciesSlug: slugify(speciesRaw),
+    speciesSlug: resolveGenderedSlug(slugify(speciesRaw)),
     speciesDisplay: speciesRaw,
     itemName,
     abilityName: null,
