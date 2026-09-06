@@ -1,10 +1,10 @@
 {
   "files": {
-    "main.js": "/pokemon-vgc-calculator/static/js/main.13d58dff.js",
+    "main.js": "/pokemon-vgc-calculator/static/js/main.b575f3de.js",
     "index.html": "/pokemon-vgc-calculator/index.html",
-    "main.13d58dff.js.map": "/pokemon-vgc-calculator/static/js/main.13d58dff.js.map"
+    "main.b575f3de.js.map": "/pokemon-vgc-calculator/static/js/main.b575f3de.js.map"
   },
   "entrypoints": [
-    "static/js/main.13d58dff.js"
+    "static/js/main.b575f3de.js"
   ]
 }
